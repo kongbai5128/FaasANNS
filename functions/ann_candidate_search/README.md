@@ -8,10 +8,10 @@
 函数端需要从挂载目录加载：
 
 ```text
-/mnt/faasann/index/pq/pq_meta.json
-/mnt/faasann/index/pq/pq_codebooks.npy
-/mnt/faasann/index/pq/pq_codes.npy
-/mnt/faasann/index/pq/pq_ids.npy
+/mnt/faasann/index/full/pq/pq_meta.json
+/mnt/faasann/index/full/pq/pq_codebooks.npy
+/mnt/faasann/index/full/pq/pq_codes.npy
+/mnt/faasann/index/full/pq/pq_ids.npy
 ```
 
 `pq_meta.json` 必须包含：
@@ -52,7 +52,7 @@ cd /home/qian/Code/FaasANN
 ```bash
 python data_generator/build_pq_index.py \
   --src data/sift100w/sift_base.fvecs \
-  --dst data/index/pq \
+  --dst data/index/full/pq \
   --subspaces 16 \
   --codebook-size 256 \
   --train-size 100000 \
@@ -66,10 +66,10 @@ python data_generator/build_pq_index.py \
 默认路径以 `FAASANN_DATA_ROOT=/mnt/faasann` 为根目录。也可以显式指定：
 
 ```text
-FAASANN_PQ_META_PATH=/mnt/faasann/index/pq/pq_meta.json
-FAASANN_PQ_CODEBOOKS_PATH=/mnt/faasann/index/pq/pq_codebooks.npy
-FAASANN_PQ_CODES_PATH=/mnt/faasann/index/pq/pq_codes.npy
-FAASANN_PQ_IDS_PATH=/mnt/faasann/index/pq/pq_ids.npy
+FAASANN_PQ_META_PATH=/mnt/faasann/index/full/pq/pq_meta.json
+FAASANN_PQ_CODEBOOKS_PATH=/mnt/faasann/index/full/pq/pq_codebooks.npy
+FAASANN_PQ_CODES_PATH=/mnt/faasann/index/full/pq/pq_codes.npy
+FAASANN_PQ_IDS_PATH=/mnt/faasann/index/full/pq/pq_ids.npy
 ```
 
 ## 接口

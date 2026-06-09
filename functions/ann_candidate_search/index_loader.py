@@ -13,7 +13,7 @@ import numpy as np
 
 
 DATA_ROOT = Path(os.environ.get("FAASANN_DATA_ROOT", "/mnt/faasann"))
-PQ_DIR = DATA_ROOT / "index" / "pq"
+PQ_DIR = DATA_ROOT / "index" / "full" / "pq"
 PQ_META_PATH = Path(os.environ.get("FAASANN_PQ_META_PATH", str(PQ_DIR / "pq_meta.json")))
 PQ_CODEBOOKS_PATH = Path(os.environ.get("FAASANN_PQ_CODEBOOKS_PATH", str(PQ_DIR / "pq_codebooks.npy")))
 PQ_CODES_PATH = Path(os.environ.get("FAASANN_PQ_CODES_PATH", str(PQ_DIR / "pq_codes.npy")))

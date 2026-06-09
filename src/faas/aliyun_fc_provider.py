@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import email.utils
 import json
+from urllib.error import HTTPError
 import urllib.request
 
 from faas.payload import CandidateSearchPayload
@@ -41,8 +42,12 @@ class AliyunHTTPProvider:
             },
             method="POST",
         )
-        with self.opener.open(request, timeout=self.timeout_seconds) as response:
-            return json.loads(response.read().decode("utf-8"))
+        try:
+            with self.opener.open(request, timeout=self.timeout_seconds) as response:
+                return json.loads(response.read().decode("utf-8"))
+        except HTTPError as exc:
+            body = exc.read().decode("utf-8", errors="replace")
+            raise RuntimeError(f"FaaS HTTP {exc.code}: {body}") from exc
 
     def _post_candidates(self, payload: dict) -> list[dict]:
         data = self._post_json(payload)

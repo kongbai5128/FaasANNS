@@ -6,6 +6,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+import traceback
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
@@ -36,7 +37,8 @@ class CandidateSearchHTTPHandler(BaseHTTPRequestHandler):
             result = candidate_handler(payload)
             self._send_json(result)
         except Exception as exc:
-            self._send_json({"error": str(exc)}, status=500)
+            print(traceback.format_exc(), flush=True)
+            self._send_json({"error": str(exc), "error_type": type(exc).__name__}, status=500)
 
     def log_message(self, format: str, *args: Any) -> None:
         return

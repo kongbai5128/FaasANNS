@@ -45,7 +45,7 @@ def create_router(search_service: SearchService, vector_store: VectorStore) -> A
                 candidate_k=request.candidate_k,
                 ef_search=request.ef_search,
             )
-        except (HTTPError, URLError, TimeoutError) as exc:
+        except (HTTPError, RuntimeError, URLError, TimeoutError) as exc:
             raise HTTPException(status_code=502, detail=f"faas invoke failed: {exc}") from exc
         return result.to_json()
 

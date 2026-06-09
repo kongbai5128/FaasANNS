@@ -61,7 +61,7 @@ Build the Function Compute PQ index:
 ```bash
 python data_generator/build_pq_index.py \
   --src data/sift100w/sift_base.fvecs \
-  --dst data/index/pq \
+  --dst data/index/full/pq \
   --subspaces 16 \
   --codebook-size 256 \
   --train-size 100000 \
@@ -70,7 +70,7 @@ python data_generator/build_pq_index.py \
   --batch-size 50000
 ```
 
-Upload `data/index/pq/pq_meta.json`, `pq_codebooks.npy`, `pq_codes.npy`, and `pq_ids.npy` to the function mount path.
+Upload `data/index/full/pq/pq_meta.json`, `pq_codebooks.npy`, `pq_codes.npy`, and `pq_ids.npy` to the function mount path.
 
 ## Run
 
