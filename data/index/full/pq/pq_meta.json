@@ -1,0 +1,11 @@
+{
+  "source": "/home/qian/Code/FaasANN/data/sift100w/sift_base.fvecs",
+  "dimension": 128,
+  "vector_count": 1000000,
+  "subspace_count": 16,
+  "codebook_size": 256,
+  "train_size": 100000,
+  "iterations": 25,
+  "seed": 0,
+  "batch_size": 50000
+}

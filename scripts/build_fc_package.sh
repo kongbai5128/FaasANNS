@@ -2,9 +2,8 @@
 # Build an Alibaba Cloud Function Compute upload package for ann_candidate_search.
 #
 # Alibaba FC custom runtimes do not install requirements.txt automatically when a
-# folder is uploaded from the console. This script vendors numpy/hnswlib into a
-# python/ directory inside the function package and creates a ZIP that can be
-# uploaded directly.
+# folder is uploaded from the console. This script vendors numpy into a python/
+# directory inside the function package and creates a ZIP that can be uploaded directly.
 
 set -euo pipefail
 
@@ -58,8 +57,7 @@ if [[ "$USE_DOCKER" == "1" ]]; then
       "deb http://archive.debian.org/debian buster-updates main" > /etc/apt/sources.list \
       && printf "Acquire::Check-Valid-Until false;\n" > /etc/apt/apt.conf.d/99no-check-valid-until \
       && apt-get update \
-      && apt-get install -y --no-install-recommends build-essential \
-      && HNSWLIB_NO_NATIVE=1 python -m pip install --upgrade --no-cache-dir --target /build/python -r /build/requirements.txt \
+      && python -m pip install --upgrade --no-cache-dir --target /build/python -r /build/requirements.txt \
       && chown -R "${HOST_UID}:${HOST_GID}" /build'
 else
   "$PYTHON_BIN" -m pip install \

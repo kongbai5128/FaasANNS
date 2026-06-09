@@ -47,6 +47,20 @@ cd /home/qian/Code/FaasANN
 ./scripts/build_fc_package.sh
 ```
 
+生成 PQ 索引：
+
+```bash
+python data_generator/build_pq_index.py \
+  --src data/sift100w/sift_base.fvecs \
+  --dst data/index/pq \
+  --subspaces 16 \
+  --codebook-size 256 \
+  --train-size 100000 \
+  --iterations 25 \
+  --seed 0 \
+  --batch-size 50000
+```
+
 ## 环境变量
 
 默认路径以 `FAASANN_DATA_ROOT=/mnt/faasann` 为根目录。也可以显式指定：

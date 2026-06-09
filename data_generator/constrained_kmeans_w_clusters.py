@@ -1,11 +1,18 @@
 """生成 FaasANN 本地 HNSW 索引。
 
-这个脚本保留了原来的 constrained k-means 分区能力，但第一版推荐使用 `--k 1`：
-直接从 fvecs 读取向量，构建一个完整 hnswlib 索引并输出到 data/full_hnsw.bin。
+这个脚本保留了原来的 constrained k-means 分区能力，但本项目默认使用 `--k 1`：
+直接从 fvecs 推断维度和数量，构建一个完整 hnswlib 索引。
 
-第一版服务端不做分区，因此 `--k 1` 模式不会导入 k_means_constrained 或 matplotlib。
+服务端本地路径不做分区，因此 `--k 1` 模式不会导入 k_means_constrained 或 matplotlib。
 只有后续需要分区实验时，`--k > 1` 才会走 constrained k-means 并生成 partition_*.bin。
-.venv/bin/python scripts/build_index.py --base data/sift100w/sift_base.fvecs --out-dir data/index/full --topk 1000000 --m 32 --ef-construction 200 --ef-search 80
+
+python data_generator/constrained_kmeans_w_clusters.py \
+  --src data/sift100w/sift_base.fvecs \
+  --dst data/index/full \
+  --k 1 \
+  --m 32 \
+  --ef-construction 200 \
+  --ef-search 80
 """
 
 from __future__ import annotations
@@ -125,7 +132,7 @@ def save_centroids_binary(centroids: np.ndarray, sizes: list[int], output_path: 
 
 
 def build_full_index(args: argparse.Namespace) -> None:
-    vectors = read_fvecs(args.src, count=args.topk)
+    vectors = read_fvecs(args.src, count=args.max_vectors)
     output_dir = Path(args.dst)
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -158,7 +165,7 @@ def build_partitioned_indexes(args: argparse.Namespace) -> None:
     from k_means_constrained import KMeansConstrained
     import matplotlib.pyplot as plt
 
-    vectors = read_fvecs(args.src, count=args.topk)
+    vectors = read_fvecs(args.src, count=args.max_vectors)
     output_dir = Path(args.dst)
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -239,7 +246,7 @@ def process_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Build full or partitioned hnswlib indexes for FaasANN")
     parser.add_argument("--src", required=True, help="input .fvecs file")
     parser.add_argument("--dst", required=True, help="output directory")
-    parser.add_argument("--topk", type=int, default=1000000, help="number of vectors to index")
+    parser.add_argument("--max-vectors", type=int, default=None, help="optional number of vectors to index")
     parser.add_argument("--k", type=int, default=1, help="number of partitions; k=1 builds one full index")
     parser.add_argument("--index-name", default="full_hnsw.bin", help="output file name for k=1")
     parser.add_argument("--space", default="l2", choices=["l2", "ip", "cosine"], help="hnswlib distance space")
