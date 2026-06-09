@@ -1,0 +1,573 @@
+FaasANN 查询流程总览
+====================
+
+这份文档说明：当一个 query 到达当前服务器时，系统内部完整发生了什么。
+
+当前版本是“完整索引、不分区”的第一版：
+
+- VM/本机服务器常驻运行；
+- raw vectors 保留在 VM 侧；
+- exact rerank 在 VM 侧执行；
+- 候选召回可以走本地 HNSW，也可以在高负载时切换到 FaaS provider；
+- 当前默认 FaaS provider 是本地模拟器，后续可以替换成阿里云函数计算 HTTP Trigger。
+
+
+当前数据与索引状态
+------------------
+
+原始向量文件：
+
+  data/sift100w/sift_base.fvecs
+
+当前配置读取的向量数量：
+
+  dataset.max_vectors = 1000000
+
+完整 HNSW 索引文件：
+
+  data/index/full/full_hnsw.bin
+
+索引元信息文件：
+
+  data/index/full/full_hnsw.meta.json
+
+注意：
+
+`full_hnsw.bin` 才是真正用于搜索的索引文件。
+
+`full_hnsw.meta.json` 不是搜索索引本身，但它有用。服务器加载索引时会用它检查：
+
+- 索引向量数是否等于 VM 侧加载的 raw vector 数；
+- 索引维度是否等于 raw vector 维度。
+
+这样可以避免一个很危险的错配：
+
+  VM 读了 1000000 条 raw vectors，
+  但 HNSW 索引其实只基于 10000 条向量构建。
+
+
+主要模块职责
+------------
+
+src/server:
+
+  HTTP 接口层。
+  接收 `/search` 请求，校验参数，把 `query_id` 或 `vector` 转换成 NumPy query vector。
+
+src/vectors:
+
+  VM 侧原始向量层。
+  负责读取 fvecs、保存 raw vectors、按 id 取向量、计算 exact L2 distance、执行最终 rerank。
+
+src/search:
+
+  搜索逻辑层。
+  负责加载 HNSW 候选索引，决定候选召回走本地还是 FaaS，然后把候选结果交给 `vectors` 做 exact rerank。
+
+src/faas:
+
+  FaaS provider 抽象层。
+  当前默认是 `LocalFaaSProvider`，也就是在同一个进程里模拟函数调用。
+  后续接阿里云函数计算时，使用 `AliyunHTTPProvider`。
+
+src/scaling:
+
+  弹性扩展控制层。
+  包括 QPS 统计、local/FaaS 决策和 FaaS 预热。
+  真实的函数实例并发、排队和扩缩容由阿里云 FC 负责。
+
+
+服务器启动流程
+--------------
+
+在任何 query 到达之前，`src/main.py` 会完成初始化。
+
+1. 读取配置文件：
+
+   configs/server.local.json
+
+2. 加载 VM 侧 raw vectors。
+
+   使用：
+
+     VectorStore.from_fvecs(...)
+
+   当前配置：
+
+     base_path = data/sift100w/sift_base.fvecs
+     max_vectors = 1000000
+     dimension = 128
+
+   加载完成后，VM 内存中会有一份 raw vector 矩阵。
+   这份矩阵用于后续 exact rerank。
+
+3. 创建 HNSWIndex。
+
+   服务器优先尝试加载：
+
+     data/index/full/full_hnsw.bin
+
+   如果旁边存在：
+
+     data/index/full/full_hnsw.meta.json
+
+   则校验：
+
+     meta.vector_count == 当前加载的 raw vector 数量
+     meta.dimension == 当前加载的 raw vector 维度
+
+   如果校验通过，就使用 hnswlib 作为本地候选召回后端。
+
+   如果索引文件不存在，则 fallback：
+
+   - 优先现场构建 Faiss HNSW；
+   - 如果 Faiss 不可用，再退化为 NumPy 精确扫描。
+
+4. 创建 FaaS provider。
+
+   如果配置是：
+
+     faas.provider = local
+
+   那么使用 `LocalFaaSProvider`。
+   它会在本地进程里调用同一个 HNSWIndex，用来模拟 FaaS 候选召回。
+
+   如果配置是：
+
+     faas.provider = aliyun_http
+
+   那么使用 `AliyunHTTPProvider`。
+   它会把候选搜索请求 POST 到阿里云函数计算 HTTP Trigger。
+
+5. 创建运行时控制组件：
+
+   - RuntimeMetrics
+   - OffloadPlanner
+   - WarmupManager
+   - SearchService
+
+6. 启动 FastAPI 接口：
+
+   GET  /health
+   GET  /stats
+   POST /search
+
+7. 应用启动时，WarmupManager 会启动后台任务：
+
+   - 可选发送一次 warmup ping；
+   - 周期性根据近期 QPS 判断是否向 FC 发送更多 warmup ping。
+
+
+一个 Query 到达后的完整流程
+---------------------------
+
+客户端发送：
+
+  POST /search
+
+请求体可以是：
+
+  {
+    "query_id": 0,
+    "k": 10
+  }
+
+也可以是：
+
+  {
+    "vector": [ ... 128 个 float ... ],
+    "k": 10
+  }
+
+
+第一步：HTTP 路由接收请求
+------------------------
+
+对应文件：
+
+  src/server/routes.py
+
+`/search` 路由收到 `SearchRequest` 后，先解析 query。
+
+如果请求里有 `vector`：
+
+- 转成 float32 NumPy array；
+- 检查维度是否等于 128。
+
+如果请求里有 `query_id`：
+
+- 检查 `query_id` 是否在 `[0, vector_store.size)` 范围内；
+- 从 VM 侧 `VectorStore` 中复制对应向量作为 query vector。
+
+解析完成后，路由调用：
+
+  SearchService.search(...)
+
+
+第二步：SearchService 填充默认参数
+----------------------------------
+
+对应文件：
+
+  src/search/service.py
+
+`SearchService.search` 会补齐运行时参数：
+
+  request_id  = 用户传入的 request_id，或者自动生成 uuid
+  k           = request.k，或者 search.hnsw.default_k
+  candidate_k = request.candidate_k，或者 search.hnsw.candidate_k
+  ef_search   = request.ef_search，或者 search.hnsw.hnsw_ef_search
+
+当前默认配置：
+
+  default_k = 10
+  candidate_k = 120
+  hnsw_ef_search = 80
+
+
+第三步：更新运行时指标
+----------------------
+
+SearchService 会更新 metrics：
+
+  metrics.mark_query()
+
+这一步会更新：
+
+- 滑动窗口 QPS；
+- candidate/rerank 延迟统计；
+- WarmupManager 用于预热判断的近期 QPS。
+
+
+第四步：OffloadPlanner 决定走本地还是 FaaS
+------------------------------------------
+
+对应文件：
+
+  src/scaling/planner.py
+
+SearchService 调用：
+
+  plan = planner.plan(metrics.qps, force_faas=request.use_faas)
+
+决策规则：
+
+1. 如果请求显式传了 `use_faas=true` 或 `use_faas=false`：
+
+   以请求参数为准。
+
+2. 否则，如果配置里：
+
+     search.force_faas = true
+
+   则强制走 FaaS。
+
+3. 否则比较当前 QPS 和阈值：
+
+     search.offload_qps_threshold
+
+   当前配置：
+
+     offload_qps_threshold = 20.0
+
+   如果：
+
+     QPS >= 20.0
+
+   则选择 FaaS。
+
+   如果：
+
+     QPS < 20.0
+
+   则选择本地 HNSW。
+
+Planner 同时会估算：
+
+- warm_function_target；
+- estimated_function_cost。
+
+然后 SearchService 会把 `warm_function_target` 传给 WarmupManager，用于后台预热。
+
+
+第五步 A：本地候选召回路径
+--------------------------
+
+当：
+
+  plan.mode == "local"
+
+时，SearchService 调用：
+
+  local_index.search(query, candidate_k, ef_search)
+
+当前本地 index 优先使用 hnswlib，并从下面文件加载：
+
+  data/index/full/full_hnsw.bin
+
+HNSW 返回的是候选 id 和近似距离，例如：
+
+  [
+    {"id": 0, "approx_score": 0.0},
+    {"id": 123, "approx_score": 12.34},
+    ...
+  ]
+
+这一阶段只返回候选 id 和近似分数。
+raw vectors 不会从 `src/vectors` 中复制出去。
+
+
+第五步 B：FaaS 候选召回路径
+---------------------------
+
+当：
+
+  plan.mode == "faas"
+
+时，SearchService 不再在本地申请逻辑 function slot，也不在本地排队。
+阿里云 FC 已经提供单实例并发度、请求排队和实例扩缩容，本地服务器只负责决定是否 offload。
+
+SearchService 创建 FaaS 请求 payload：
+
+  request_id
+  query
+  candidate_k
+  ef_search
+
+然后调用：
+
+  provider.invoke(payload)
+
+当前默认 provider 是：
+
+  LocalFaaSProvider
+
+它在本地进程中调用同一个 HNSWIndex，用来模拟 FaaS。
+
+未来接阿里云函数计算时，provider 会换成：
+
+  AliyunHTTPProvider
+
+它会把 payload POST 到阿里云函数计算 HTTP Trigger。
+
+函数侧应该返回：
+
+  candidate ids + approximate scores
+
+而不是 raw vectors。
+
+provider.invoke 返回后，SearchService 直接进入 VM 侧 exact rerank。
+
+
+第六步：VM 侧 exact rerank
+-------------------------
+
+无论候选来自本地 HNSW，还是来自 FaaS，最终精排都在 VM/服务器侧完成。
+
+对应文件：
+
+  src/vectors/vector_store.py
+
+SearchService 调用：
+
+  vector_store.rerank(query, candidates, k)
+
+VectorStore 会执行：
+
+1. 对 candidate ids 去重。
+
+2. 根据 id 从 raw vector 矩阵中取出原始向量。
+
+3. 计算 exact L2 distance：
+
+     sum((candidate_vector - query) ** 2)
+
+4. 按 exact L2 distance 从小到大排序。
+
+5. 返回最终 top-k。
+
+这就是当前原型里的“计算下推/数据分离”思路：
+
+- 候选召回可以被卸载到 FaaS；
+- raw vector 和 exact rerank 留在 VM。
+
+
+第七步：返回响应
+----------------
+
+SearchService 返回 `SearchResult`。
+
+`/search` 路由把它序列化成 JSON。
+
+响应结构大致如下：
+
+  {
+    "request_id": "...",
+    "results": [
+      {"id": 0, "score": 0.0},
+      ...
+    ],
+    "plan": {
+      "mode": "local" 或 "faas",
+      "reason": "...",
+      "query_qps": ...,
+      "candidate_k": ...,
+      "warm_function_target": ...,
+      "estimated_function_cost": ...
+    },
+    "timings_ms": {
+      "plan": ...,
+      "candidates": ...,
+      "rerank": ...,
+      "total": ...,
+      "remote_invoke": ...
+    }
+  }
+
+说明：
+
+`remote_invoke` 只在 FaaS 路径中出现。云函数内部排队和冷启动由阿里云 FC 负责，
+本地服务器不再维护本地 queue_wait/cold_start 指标。
+
+
+后台弹性扩展流程
+----------------
+
+query 处理之外，WarmupManager 只做预热判断：
+
+1. 每隔 `prewarm_check_seconds` 检查近期 query 增长。
+
+2. 根据 `remote_candidate_ms`、`function_concurrency` 和 planner 给出的
+   `warm_function_target` 估计应该发送多少 warmup ping。
+
+3. 如果超过 cooldown，就异步调用：
+
+   provider.warmup()
+
+真实的实例创建、单实例并发、排队、回收和扩缩容由阿里云 FC 负责。
+本地服务器不再实现旧 Go 版 `app_resource_manager.go` 里的 free pool、active pool 和 queue。
+
+
+当前第一版限制
+--------------
+
+当前版本只有一个完整 HNSW 索引，不做分区。
+
+因此目前还没有：
+
+- shard fanout；
+- centroid routing；
+- 每个 function 持有一个 graph-index shard；
+- 多 shard candidate merge。
+
+这是第一版有意保留的简化。
+
+当前要先验证：
+
+- raw vectors 是否稳定保留在 VM；
+- 100 万完整 HNSW 索引是否能加载和查询；
+- exact rerank 是否正确；
+- QPS 触发 local/FaaS 切换是否可观测；
+- WarmupManager 是否能按 QPS 发送 warmup ping。
+
+这些稳定之后，再加入分区和函数侧 graph-index placement。
+
+
+请求与 Recall 评测脚本
+---------------------
+
+当前项目提供了一个发送请求和计算 Recall 的脚本：
+
+  scripts/run_queries.py
+
+它参考了旧项目中的：
+
+  /home/qian/faasann/test/hnsw/run.py
+
+但已经适配当前服务器接口：
+
+  POST /search
+
+默认读取：
+
+  query file:
+    data/sift100w/sift_query.fvecs
+
+  groundtruth file:
+    data/sift100w/sift_groundtruth.ivecs
+
+注意：
+
+评测 Recall 时，脚本默认发送 `sift_query.fvecs` 里的真实 query vector。
+这是正确的 SIFT 评测方式。
+
+不要用 `query_id` 来评测 Recall。
+当前服务器里的 `query_id` 表示从 base vectors 中取一个向量作为 query，只适合调试服务是否能通。
+SIFT 的标准查询来自 `sift_query.fvecs`，对应正确结果来自 `sift_groundtruth.ivecs`。
+
+启动服务器后，可以这样跑一个小测试：
+
+  .venv/bin/python scripts/run_queries.py \
+    --query-num 100 \
+    --concurrent-requests 10 \
+    --k 10 \
+    --candidate-k 120 \
+    --ef-search 80
+
+如果要强制走 FaaS 模拟路径：
+
+  .venv/bin/python scripts/run_queries.py \
+    --query-num 100 \
+    --concurrent-requests 10 \
+    --k 10 \
+    --use-faas
+
+如果只是调试 `/search` 接口，不关心 SIFT Recall，可以使用：
+
+  --send-query-id
+
+这会发送：
+
+  {"query_id": i}
+
+而不是发送真实 query vector。
+
+脚本会输出：
+
+- client QPS；
+- Recall@K；
+- local/FaaS 请求数量；
+- 平均 total/candidates/rerank 时间；
+- FaaS 路径下的 remote_invoke 时间。
+
+每个 batch 的结果会写入：
+
+  logs/run_queries.csv
+
+
+Groundtruth 文件
+----------------
+
+当前已有 SIFT 官方正确结果文件：
+
+  data/sift100w/sift_groundtruth.ivecs
+
+该文件可以正常读取，格式是 ivecs，每行包含 100 个正确近邻 id。
+因此当前不需要先重新生成 groundtruth。
+
+如果以后修改了 base 数据、只保留了子集，或者想为更小规模数据重新计算正确结果，可以使用：
+
+  scripts/build_groundtruth.py
+
+示例：
+
+  .venv/bin/python scripts/build_groundtruth.py \
+    --base data/sift100w/sift_base.fvecs \
+    --query data/sift100w/sift_query.fvecs \
+    --out data/sift100w/sift_groundtruth.generated.ivecs \
+    --base-count 1000000 \
+    --query-count 1000 \
+    --k 100
+
+这个脚本会用 NumPy 分块精确 L2 搜索重新生成 ivecs。
+它比较慢，只在确实需要重建正确结果时使用。

@@ -1,0 +1,7 @@
+cd /home/qian/Code/FaasANN
+source .venv/bin/activate
+python src/main.py --config configs/server.local.json
+# python src/main.py --config configs/server.aliyun.json
+
+cd /home/qian/Code/FaasANN/scripts/
+./run_queries.sh

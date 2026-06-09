@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "faasann"
+version = "0.1.0"
+description = "Hybrid VM + FaaS approximate nearest neighbor search prototype"
+requires-python = ">=3.10"
+dependencies = [
+  "fastapi>=0.110",
+  "uvicorn[standard]>=0.27",
+  "numpy>=1.26",
+]
+
+[project.optional-dependencies]
+faiss = ["faiss-cpu>=1.8"]
+test = ["pytest>=8.0"]
+
+[tool.setuptools.packages.find]
+where = ["src"]

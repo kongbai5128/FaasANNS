@@ -1,0 +1,60 @@
+# Python bytecode and caches
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Python tooling caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.hypothesis/
+.tox/
+.nox/
+
+# Coverage and test artifacts
+.coverage
+.coverage.*
+htmlcov/
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# Build/package artifacts
+build/
+dist/
+*.egg-info/
+*.egg
+pip-wheel-metadata/
+
+# IDE/editor
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Runtime logs and temp files
+logs/
+*.log
+
+# Local environment files
+.env
+.env.*
+
+# Project-local config overrides
+configs/server.local.json
+
+# Generated ANN index artifacts
+data/index/**/*.bin
+data/index/**/*.meta.json
+data/index/**/*.tmp
+
+# Local benchmark datasets (large files)
+data/sift100w/*.fvecs
+data/sift100w/*.ivecs
