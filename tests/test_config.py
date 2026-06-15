@@ -33,6 +33,7 @@ def _full_config() -> dict:
             },
             "pipeline": {
                 "local_search_workers": 2,
+                "faas_invoke_workers": 100,
                 "rerank_workers": 4,
             },
             "offload_qps_threshold": 20.0,

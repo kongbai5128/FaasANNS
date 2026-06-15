@@ -50,7 +50,7 @@ def search_config() -> SearchConfig:
             hnsw_ef_construction=200,
             hnsw_ef_search=80,
         ),
-        pipeline=PipelineConfig(local_search_workers=1, rerank_workers=1),
+        pipeline=PipelineConfig(local_search_workers=1, faas_invoke_workers=1, rerank_workers=1),
         offload_qps_threshold=20.0,
         force_faas=False,
     )
@@ -78,6 +78,7 @@ def test_search_service_reranks_remote_pq_candidates_on_vm() -> None:
             "request_id": result.request_id,
             "query": vectors.get(0).tolist(),
             "candidate_k": 3,
+            "ef_search": 80,
         }
         assert result.results[0].id == 0
         assert len(result.results) == 2

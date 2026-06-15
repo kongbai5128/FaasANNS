@@ -118,8 +118,10 @@ class HNSWIndex:
 
     def _search_faiss(self, query: np.ndarray, candidate_k: int, ef_search: int | None) -> list[dict]:
         if ef_search is not None:
-            self.faiss_index.hnsw.efSearch = ef_search
-        distances, ids = self.faiss_index.search(query.reshape(1, -1), candidate_k)
+            params = faiss.SearchParametersHNSW(efSearch=ef_search)
+            distances, ids = self.faiss_index.search(query.reshape(1, -1), candidate_k, params=params)
+        else:
+            distances, ids = self.faiss_index.search(query.reshape(1, -1), candidate_k)
         return [
             {"id": int(vector_id), "approx_score": float(score)}
             for vector_id, score in zip(ids[0], distances[0])

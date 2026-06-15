@@ -12,15 +12,16 @@
   "search": {
     "hnsw": {
       "default_k": 10,
-      "candidate_k": 120,
+      "candidate_k": 221,
       "hnsw_index_path": "data/index/full/full_hnsw.bin",
       "hnsw_m": 32,
       "hnsw_ef_construction": 200,
-      "hnsw_ef_search": 80
+      "hnsw_ef_search": 221
     },
     "pipeline": {
       "local_search_workers": 2,
-      "rerank_workers": 4
+      "faas_invoke_workers": 100,
+      "rerank_workers": 10
     },
     "offload_qps_threshold": 20.0,
     "force_faas": false

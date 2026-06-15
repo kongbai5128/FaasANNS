@@ -5,3 +5,5 @@ python src/main.py --config configs/server.local.json
 
 cd /home/qian/Code/FaasANN/scripts/
 ./run_queries.sh
+
+./scripts/build_fc_package.sh

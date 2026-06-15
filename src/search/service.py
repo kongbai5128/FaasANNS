@@ -68,8 +68,11 @@ class SearchService:
         )
 
     def close(self) -> None:
-        self.local_search_executor.shutdown(wait=False, cancel_futures=True)
-        self.rerank_executor.shutdown(wait=False, cancel_futures=True)
+        self.local_search_executor.shutdown(wait=True, cancel_futures=True)
+        self.rerank_executor.shutdown(wait=True, cancel_futures=True)
+        close_provider = getattr(self.provider, "close", None)
+        if close_provider is not None:
+            close_provider()
 
     async def search(
         self,
@@ -81,6 +84,8 @@ class SearchService:
         ef_search: int | None = None,
     ) -> SearchResult:
         total_start = time.perf_counter()
+
+        # 请求没有显式传参时，使用配置里的默认 top-k、候选数量和 HNSW 搜索深度。
         request_id = request_id or uuid.uuid4().hex
         k = k or self.config.hnsw.default_k
         candidate_k = candidate_k or self.config.hnsw.candidate_k
@@ -88,20 +93,26 @@ class SearchService:
 
         self.metrics.mark_query()
 
+        # 根据当前 QPS 或请求级 use_faas 决定第一阶段候选召回走 VM 本地 HNSW 还是云函数 HNSW-PQ。
         timings: dict[str, float] = {}
         with measure() as plan_elapsed:
+            # 主要获取plan.mode，它是当前请求的路由结果：local 表示 VM 本地 HNSW，faas 表示调用云函数 HNSW-PQ。
             plan = self.planner.plan(self.metrics.qps, force_faas=use_faas)
+            # 每个请求都会调用一次：这里只更新 query 计数、最近 QPS 和建议 warm target。
+            # 真正发送 warmup ping 的后台循环在 WarmupManager 里按 prewarm_check_seconds 周期执行。
             self.warmup_manager.observe_query(self.metrics.qps, plan.warm_function_target)
         timings["plan"] = plan_elapsed.seconds
 
+        # 第一阶段只返回候选 id 和近似分数；云函数路径不会做 raw vector 精排。
         with measure() as candidate_elapsed:
             if plan.mode == "faas":
-                candidates = await self._search_faas(request_id, query, candidate_k, timings)
+                candidates = await self._search_faas(request_id, query, candidate_k, ef_search, timings)
             else:
                 candidates = await self._run_local_candidates(query, candidate_k, ef_search)
         timings["candidates"] = candidate_elapsed.seconds
         self.metrics.candidate_latency.record(candidate_elapsed.seconds)
 
+        # 第二阶段始终在 VM 上用原始向量 exact rerank，最终只返回 top-k。
         with measure() as rerank_elapsed:
             results = await self._rerank(query, candidates, k)
         timings["rerank"] = rerank_elapsed.seconds
@@ -115,6 +126,7 @@ class SearchService:
         request_id: str,
         query: np.ndarray,
         candidate_k: int,
+        ef_search: int,
         timings: dict[str, float],
     ) -> list[dict]:
         start = time.perf_counter()
@@ -122,6 +134,7 @@ class SearchService:
             request_id=request_id,
             query=query,
             candidate_k=candidate_k,
+            ef_search=ef_search,
         )
         try:
             return await self.provider.invoke(payload)

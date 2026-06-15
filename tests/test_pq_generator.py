@@ -1,33 +1,28 @@
-"""PQ generator tests."""
+"""Faiss HNSW-PQ generator tests."""
 
 from __future__ import annotations
 
 import numpy as np
 
-from data_generator.build_pq_index import build_pq
+from data_generator.hnsw.build_pq_index import build_hnswpq_index
 
 
-def test_build_pq_outputs_codebooks_and_codes() -> None:
-    vectors = np.array(
-        [
-            [0.0, 0.0, 0.0, 0.0],
-            [1.0, 0.0, 1.0, 0.0],
-            [0.0, 1.0, 0.0, 1.0],
-            [9.0, 9.0, 9.0, 9.0],
-        ],
-        dtype="float32",
-    )
+def test_build_hnswpq_index_uses_configured_codebook_size() -> None:
+    vectors = np.random.default_rng(0).random((160, 4), dtype=np.float32)
 
-    codebooks, codes = build_pq(
+    index = build_hnswpq_index(
         vectors,
-        subspace_count=2,
-        codebook_size=2,
-        train_size=4,
-        iterations=2,
+        subspaces=1,
+        codebook_size=4,
+        train_size=160,
+        iterations=1,
         seed=0,
-        batch_size=2,
+        hnsw_batch_size=64,
+        hnsw_m=4,
+        ef_construction=20,
+        ef_search=20,
+        metric="l2",
     )
 
-    assert codebooks.shape == (2, 2, 2)
-    assert codes.shape == (4, 2)
-    assert codes.dtype == np.uint8
+    assert index.d == 4
+    assert index.ntotal == 160

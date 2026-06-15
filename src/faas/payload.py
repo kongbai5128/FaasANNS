@@ -12,10 +12,12 @@ class CandidateSearchPayload:
     request_id: str
     query: np.ndarray
     candidate_k: int
+    ef_search: int
 
     def to_json(self) -> dict:
         return {
             "request_id": self.request_id,
             "query": self.query.astype("float32").tolist(),
             "candidate_k": self.candidate_k,
+            "ef_search": self.ef_search,
         }

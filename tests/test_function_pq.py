@@ -1,13 +1,13 @@
-"""Function-side PQ candidate search tests."""
+"""Function-side Faiss HNSW-PQ candidate search tests."""
 
 from __future__ import annotations
 
 import importlib.util
-import json
 import sys
 import uuid
 from pathlib import Path
 
+import faiss
 import numpy as np
 
 
@@ -15,39 +15,28 @@ ROOT = Path(__file__).resolve().parent.parent
 INDEX_LOADER = ROOT / "functions" / "ann_candidate_search" / "index_loader.py"
 
 
-def test_function_pq_search_returns_candidates(tmp_path, monkeypatch) -> None:
-    pq_dir = tmp_path / "pq"
-    pq_dir.mkdir()
-    meta_path = pq_dir / "pq_meta.json"
-    codebooks_path = pq_dir / "pq_codebooks.npy"
-    codes_path = pq_dir / "pq_codes.npy"
-    ids_path = pq_dir / "pq_ids.npy"
+def test_function_faiss_hnswpq_search_returns_candidates(tmp_path, monkeypatch) -> None:
+    pq_dir = tmp_path / "index" / "full" / "pq"
+    pq_dir.mkdir(parents=True)
 
-    meta_path.write_text(
-        json.dumps({"dimension": 2, "vector_count": 3, "subspace_count": 2}),
-        encoding="utf-8",
-    )
-    np.save(codebooks_path, np.array([[[0.0], [10.0]], [[0.0], [10.0]]], dtype="float32"))
-    np.save(codes_path, np.array([[0, 0], [1, 1], [0, 1]], dtype="uint8"))
-    np.save(ids_path, np.array([100, 101, 102], dtype="int64"))
+    vectors = np.random.default_rng(0).random((160, 4), dtype=np.float32)
+    index = faiss.index_factory(4, "HNSW4,PQ1x2", faiss.METRIC_L2)
+    index.train(vectors)
+    index.add(vectors)
+    faiss.write_index(index, str(pq_dir / "faiss_hnswpq.index"))
 
-    monkeypatch.setenv("FAASANN_PQ_META_PATH", str(meta_path))
-    monkeypatch.setenv("FAASANN_PQ_CODEBOOKS_PATH", str(codebooks_path))
-    monkeypatch.setenv("FAASANN_PQ_CODES_PATH", str(codes_path))
-    monkeypatch.setenv("FAASANN_PQ_IDS_PATH", str(ids_path))
-
+    monkeypatch.setenv("FAASANN_DATA_ROOT", str(tmp_path))
     module = _load_index_loader()
 
-    candidates = module.search(query=[0.0, 0.0], candidate_k=2)
+    candidates = module.search(query=vectors[0].tolist(), candidate_k=5, ef_search=20)
 
-    assert candidates == [
-        {"id": 100, "approx_score": 0.0},
-        {"id": 102, "approx_score": 100.0},
-    ]
+    assert len(candidates) == 5
+    assert candidates[0]["id"] >= 0
+    assert candidates[0]["approx_score"] >= 0.0
 
 
 def _load_index_loader():
-    name = f"function_pq_index_loader_{uuid.uuid4().hex}"
+    name = f"function_faiss_index_loader_{uuid.uuid4().hex}"
     spec = importlib.util.spec_from_file_location(name, INDEX_LOADER)
     module = importlib.util.module_from_spec(spec)
     sys.modules[name] = module

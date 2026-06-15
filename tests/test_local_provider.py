@@ -23,9 +23,10 @@ def test_local_provider_invokes_index_search() -> None:
                 request_id="r1",
                 query=np.array([3], dtype="float32"),
                 candidate_k=5,
+                ef_search=80,
             )
         )
 
-        assert results == [{"id": 3, "candidate_k": 5, "ef_search": None}]
+        assert results == [{"id": 3, "candidate_k": 5, "ef_search": 80}]
 
     asyncio.run(scenario())

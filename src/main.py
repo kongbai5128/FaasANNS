@@ -43,10 +43,14 @@ def load_vector_store(config: AppConfig, config_path: str) -> VectorStore:
 
 
 def create_app(config_path: str) -> FastAPI:
+    # 读取 server/local 或 server/aliyun 配置，并按配置设置日志级别。
     config = load_config(config_path)
     configure_logging(config.server.log_level)
 
+    # VM 侧始终加载原始向量；无论候选来自本地还是云函数，最终 exact rerank 都要用它。
     vector_store = load_vector_store(config, config_path)
+
+    # 本地 HNSW 索引用于 local 路径；走阿里云函数时，它仍保留给低 QPS 或调试场景使用。
     local_index = HNSWIndex(
         vector_store.vectors,
         index_path=project_path(config_path, config.search.hnsw.hnsw_index_path),
@@ -55,16 +59,19 @@ def create_app(config_path: str) -> FastAPI:
         ef_search=config.search.hnsw.hnsw_ef_search,
     )
 
+    # provider 决定第一阶段候选召回发到哪里：阿里云 HTTP 函数，或本地 HNSW 模拟器。
     if config.faas.provider == "aliyun_http":
         provider = AliyunHTTPProvider(
             endpoints=config.faas.endpoints,
             timeout_seconds=config.faas.invoke_timeout_seconds,
+            invoke_workers=config.search.pipeline.faas_invoke_workers,
         )
     elif config.faas.provider == "local":
         provider = LocalFaaSProvider(local_index)
     else:
         raise ValueError(f"unsupported faas.provider={config.faas.provider!r}")
 
+    # 组装运行时状态：QPS 统计、offload 决策、预热管理和两阶段搜索服务。
     metrics = RuntimeMetrics()
     planner = OffloadPlanner(config.search, config.scaling)
     warmup_manager = WarmupManager(provider=provider, config=config.scaling)
@@ -80,6 +87,7 @@ def create_app(config_path: str) -> FastAPI:
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
+        # 服务启动时启动预热后台任务；关闭时停止预热并回收搜索线程池。
         await warmup_manager.start()
         try:
             yield

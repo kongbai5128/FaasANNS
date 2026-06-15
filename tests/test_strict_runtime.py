@@ -36,7 +36,7 @@ def test_load_vector_store_rejects_missing_dataset(tmp_path) -> None:
                 hnsw_ef_construction=200,
                 hnsw_ef_search=80,
             ),
-            pipeline=PipelineConfig(local_search_workers=2, rerank_workers=4),
+            pipeline=PipelineConfig(local_search_workers=2, faas_invoke_workers=100, rerank_workers=4),
             offload_qps_threshold=20.0,
             force_faas=False,
         ),

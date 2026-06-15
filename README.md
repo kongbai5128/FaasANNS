@@ -47,30 +47,34 @@ pip install -r requirements.txt
 Build the local VM HNSW index:
 
 ```bash
-python data_generator/constrained_kmeans_w_clusters.py \
+python data_generator/hnsw/constrained_kmeans_w_clusters.py \
   --src data/sift100w/sift_base.fvecs \
   --dst data/index/full \
   --k 1 \
   --m 32 \
   --ef-construction 200 \
-  --ef-search 80
+  --ef-search 160
 ```
 
-Build the Function Compute PQ index:
+Build the Function Compute Faiss HNSW-PQ index:
 
 ```bash
-python data_generator/build_pq_index.py \
+python data_generator/hnsw/build_pq_index.py \
   --src data/sift100w/sift_base.fvecs \
   --dst data/index/full/pq \
   --subspaces 16 \
   --codebook-size 256 \
-  --train-size 100000 \
+  --train-size 1000000 \
   --iterations 25 \
   --seed 0 \
-  --batch-size 50000
+  --hnsw-space l2 \
+  --hnsw-m 32 \
+  --hnsw-ef-construction 200 \
+  --hnsw-ef-search 160 \
+  --hnsw-batch-size 50000
 ```
 
-Upload `data/index/full/pq/pq_meta.json`, `pq_codebooks.npy`, `pq_codes.npy`, and `pq_ids.npy` to the function mount path.
+Upload `data/index/full/pq/faiss_hnswpq.index` to the function mount path.
 
 ## Run
 

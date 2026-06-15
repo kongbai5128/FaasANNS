@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""阿里云函数计算 Faiss HNSW-PQ 候选召回入口。"""
+"""阿里云函数计算两阶段搜索 baseline 入口。"""
 
 from __future__ import annotations
 
@@ -49,8 +49,9 @@ def _handle_payload(payload: dict) -> dict:
 
     candidates = search(
         query=payload["query"],
+        k=int(payload["k"]),
         candidate_k=int(payload["candidate_k"]),
-        ef_search=int(payload["ef_search"]),
+        ef_search=int(payload.get("ef_search") or 0),
     )
     return {
         "request_id": payload.get("request_id"),

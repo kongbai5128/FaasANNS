@@ -20,7 +20,7 @@ def search_config(**overrides) -> SearchConfig:
     )
     data = {
         "hnsw": hnsw,
-        "pipeline": PipelineConfig(local_search_workers=2, rerank_workers=4),
+        "pipeline": PipelineConfig(local_search_workers=2, faas_invoke_workers=100, rerank_workers=4),
         "offload_qps_threshold": 20.0,
         "force_faas": False,
     }

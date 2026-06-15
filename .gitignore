@@ -42,6 +42,13 @@ Thumbs.db
 # Runtime logs and temp files
 logs/
 *.log
+baseline/**/test/result/
+
+# Generated data and index artifacts
+data/
+*.bin
+*.npy
+*.index
 
 # Local environment files
 .env
@@ -49,12 +56,3 @@ logs/
 
 # Project-local config overrides
 configs/server.local.json
-
-# Generated ANN index artifacts
-data/index/**/*.bin
-data/index/**/*.meta.json
-data/index/**/*.tmp
-
-# Local benchmark datasets (large files)
-data/sift100w/*.fvecs
-data/sift100w/*.ivecs

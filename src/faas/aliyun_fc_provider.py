@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import email.utils
 import json
+from concurrent.futures import ThreadPoolExecutor
 from urllib.error import HTTPError
 import urllib.request
 
@@ -16,20 +17,29 @@ from faas.payload import CandidateSearchPayload
 
 
 class AliyunHTTPProvider:
-    def __init__(self, endpoints: dict[str, str], timeout_seconds: float):
+    def __init__(self, endpoints: dict[str, str], timeout_seconds: float, invoke_workers: int):
         if "default" not in endpoints:
             raise RuntimeError("faas.endpoints.default is required when provider=aliyun_http")
         self.endpoint = endpoints["default"]
         self.timeout_seconds = timeout_seconds
+        self.executor = ThreadPoolExecutor(
+            max_workers=invoke_workers,
+            thread_name_prefix="faasann-faas-invoke",
+        )
         self.opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
         if not self.endpoint:
             raise RuntimeError("faas.endpoints.default is required when provider=aliyun_http")
 
     async def invoke(self, payload: CandidateSearchPayload) -> list[dict]:
-        return await asyncio.to_thread(self._post_candidates, payload.to_json())
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(self.executor, self._post_candidates, payload.to_json())
 
     async def warmup(self) -> None:
-        await asyncio.to_thread(self._post_json, {"type": "warmup"})
+        loop = asyncio.get_running_loop()
+        await loop.run_in_executor(self.executor, self._post_json, {"type": "warmup"})
+
+    def close(self) -> None:
+        self.executor.shutdown(wait=True, cancel_futures=True)
 
     def _post_json(self, payload: dict):
         body = json.dumps(payload).encode("utf-8")

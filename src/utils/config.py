@@ -34,6 +34,7 @@ class HNSWConfig:
 @dataclass
 class PipelineConfig:
     local_search_workers: int
+    faas_invoke_workers: int
     rerank_workers: int
 
 
