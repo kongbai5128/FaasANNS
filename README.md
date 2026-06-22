@@ -97,21 +97,12 @@ Upload `data/sift100w/index/full/pq/faiss_hnswpq.index` to the function mount pa
 ## Run
 
 ```bash
-python src/main.py --config configs/server.local.json
+python src/main.py --config configs/server.aliyun.json
 ```
 
 Example query:
 
 ```bash
-curl -X POST http://127.0.0.1:8080/search \
-  -H 'content-type: application/json' \
-  -d '{"query_id": 0, "k": 10}'
-```
-
-Force the offload path:
-
-```bash
-curl -X POST http://127.0.0.1:8080/search \
-  -H 'content-type: application/json' \
-  -d '{"query_id": 0, "k": 10, "use_faas": true}'
+cd /home/qian/Code/FaasANNS/scripts/
+./run_queries.sh  --dataset gist
 ```
