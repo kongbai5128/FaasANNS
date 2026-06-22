@@ -16,7 +16,8 @@ import numpy as np
 
 
 DEFAULT_DATASET = "sift100w"
-DATA_ROOT = Path(os.environ.get("FAASANN_DATA_ROOT", "/mnt/faasann"))
+DATA_ROOT = Path(os.environ.get("FAASANN_DATA_ROOT", "/home/qian/Code/FaasANNS/data"))
+# DATA_ROOT = Path(os.environ.get("FAASANN_DATA_ROOT", "/mnt/faasann"))
 DATASET = os.environ.get("FAASANN_DATASET", DEFAULT_DATASET).strip().strip("/")
 if not DATASET or "/" in DATASET or DATASET in {".", ".."}:
     raise ValueError(f"invalid FAASANN_DATASET={DATASET!r}")

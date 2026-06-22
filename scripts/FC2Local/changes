@@ -1,0 +1,6 @@
+/home/qian/Code/FaasANNS/configs/server.aliyun.json:
+    endpoints
+    --log-file
+
+/home/qian/Code/FaasANNS/functions/ann_candidate_search/index_loader.py:
+    DATA_ROOT

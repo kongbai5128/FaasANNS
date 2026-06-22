@@ -1,0 +1,6 @@
+baseline/functions/full_search/test/run_queries.sh:
+    ENDPOINT
+    --log-file
+
+baseline/functions/full_search/src/index_loader.py:
+    DATA_ROOT

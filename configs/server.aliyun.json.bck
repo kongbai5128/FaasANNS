@@ -6,7 +6,7 @@
   },
   "dataset": {
     "base_path": "data/sift100w/sift_base.fvecs",
-    "dimension": 128,
+    "dimension": 960,
     "max_vectors": 1000000
   },
   "search": {
@@ -42,7 +42,7 @@
     "invoke_timeout_seconds": 600.0,
     "warmup_timeout_seconds": 600.0,
     "endpoints": {
-      "default": "http://127.0.0.1:9000"
+      "default": "https://vector-search-qpvucermgx.cn-hongkong.fcapp.run"
     }
   }
 }
