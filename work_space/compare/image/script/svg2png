@@ -1,3 +1,0 @@
-sudo apt install librsvg2-bin
-cd /home/qian/Code/FaasANNS/work_space/compare/image
-rsvg-convert qps_by_method_cold_state.svg -o qps_by_method_cold_state.png

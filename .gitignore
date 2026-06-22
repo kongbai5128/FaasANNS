@@ -56,3 +56,5 @@ data/
 
 # Project-local config overrides
 configs/server.local.json
+
+work_space/
