@@ -5,30 +5,30 @@
     "log_level": "info"
   },
   "dataset": {
-    "base_path": "data/sift100w/sift_base.fvecs",
-    "dimension": 128,
+    "base_path": "data/gist/gist_base.fvecs",
+    "dimension": 960,
     "max_vectors": 1000000
   },
   "search": {
     "hnsw": {
       "default_k": 10,
-      "candidate_k": 221,
-      "hnsw_index_path": "data/index/full/full_hnsw.bin",
+      "candidate_k": 500,
+      "hnsw_index_path": "data/gist/index/full/full_hnsw.bin",
       "hnsw_m": 32,
       "hnsw_ef_construction": 200,
-      "hnsw_ef_search": 221
+      "hnsw_ef_search": 500
     },
     "pipeline": {
       "local_search_workers": 2,
       "faas_invoke_workers": 100,
       "rerank_workers": 10
     },
-    "offload_qps_threshold": 20.0,
+    "offload_qps_threshold": 10,
     "force_faas": false
   },
   "scaling": {
-    "prewarm_check_seconds": 0.1,
-    "load_index_timeout_seconds": 3.0,
+    "prewarm_check_seconds": 600.0,
+    "load_index_timeout_seconds": 600.0,
     "enable_prewarm": false,
     "local_candidate_ms": 8.0,
     "remote_candidate_ms": 20.0,
@@ -39,8 +39,8 @@
   },
   "faas": {
     "provider": "aliyun_http",
-    "invoke_timeout_seconds": 10.0,
-    "warmup_timeout_seconds": 5.0,
+    "invoke_timeout_seconds": 600.0,
+    "warmup_timeout_seconds": 600.0,
     "endpoints": {
       "default": "https://vector-search-qpvucermgx.cn-hongkong.fcapp.run"
     }

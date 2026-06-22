@@ -10,7 +10,16 @@ import pytest
 from utils.config import load_config
 
 
-def _full_config() -> dict:
+def _dataset_paths(dataset: str) -> tuple[str, str]:
+    prefix = "sift" if dataset == "sift100w" else dataset
+    return (
+        f"data/{dataset}/{prefix}_base.fvecs",
+        f"data/{dataset}/index/full/full_hnsw.bin",
+    )
+
+
+def _full_config(dataset: str = "sift100w", dimension: int = 128) -> dict:
+    base_path, hnsw_index_path = _dataset_paths(dataset)
     return {
         "server": {
             "host": "127.0.0.1",
@@ -18,15 +27,15 @@ def _full_config() -> dict:
             "log_level": "info",
         },
         "dataset": {
-            "base_path": "data/sift100w/sift_base.fvecs",
-            "dimension": 128,
+            "base_path": base_path,
+            "dimension": dimension,
             "max_vectors": 1000000,
         },
         "search": {
             "hnsw": {
                 "default_k": 10,
                 "candidate_k": 120,
-                "hnsw_index_path": "data/index/full/full_hnsw.bin",
+                "hnsw_index_path": hnsw_index_path,
                 "hnsw_m": 32,
                 "hnsw_ef_construction": 200,
                 "hnsw_ef_search": 80,
@@ -65,11 +74,36 @@ def _write_config(tmp_path: Path, data: dict) -> Path:
     return path
 
 
-def test_load_config_accepts_complete_config(tmp_path: Path) -> None:
-    config = load_config(_write_config(tmp_path, _full_config()))
+@pytest.mark.parametrize(
+    ("dataset", "dimension", "base_path", "hnsw_index_path"),
+    [
+        (
+            "sift100w",
+            128,
+            "data/sift100w/sift_base.fvecs",
+            "data/sift100w/index/full/full_hnsw.bin",
+        ),
+        (
+            "gist",
+            960,
+            "data/gist/gist_base.fvecs",
+            "data/gist/index/full/full_hnsw.bin",
+        ),
+    ],
+)
+def test_load_config_accepts_complete_config(
+    tmp_path: Path,
+    dataset: str,
+    dimension: int,
+    base_path: str,
+    hnsw_index_path: str,
+) -> None:
+    config = load_config(_write_config(tmp_path, _full_config(dataset=dataset, dimension=dimension)))
 
     assert config.server.port == 8080
-    assert config.search.hnsw.hnsw_index_path == "data/index/full/full_hnsw.bin"
+    assert config.dataset.base_path == base_path
+    assert config.dataset.dimension == dimension
+    assert config.search.hnsw.hnsw_index_path == hnsw_index_path
 
 
 def test_load_config_rejects_missing_key(tmp_path: Path) -> None:

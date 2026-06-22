@@ -1,10 +1,11 @@
-"""Send SIFT queries directly to the two-stage Function Compute baseline."""
+"""Send dataset queries directly to the two-stage Function Compute baseline."""
 
 from __future__ import annotations
 
 import argparse
 import csv
 import json
+import os
 import sys
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -18,6 +19,32 @@ sys.path.insert(0, str(ROOT / "src"))
 
 from vectors.fvecs import read_fvecs
 from vectors.ivecs import read_ivecs
+
+
+DEFAULT_DATASET = "sift100w"
+
+
+def normalize_dataset(dataset: str) -> str:
+    dataset = dataset.strip().strip("/")
+    if not dataset or "/" in dataset or dataset in {".", ".."}:
+        raise SystemExit("dataset must be one directory name, for example: sift100w or gist")
+    return dataset
+
+
+def dataset_file_prefix(dataset: str) -> str:
+    if dataset == "sift100w":
+        return "sift"
+    return dataset
+
+
+def default_query_file(dataset: str) -> str:
+    prefix = dataset_file_prefix(dataset)
+    return f"data/{dataset}/{prefix}_query.fvecs"
+
+
+def default_groundtruth_file(dataset: str) -> str:
+    prefix = dataset_file_prefix(dataset)
+    return f"data/{dataset}/{prefix}_groundtruth.ivecs"
 
 
 def post_json(url: str, payload: dict, timeout: float) -> dict:
@@ -56,6 +83,10 @@ def send_one_query(
         "query_id": query_id,
         "result_ids": result_ids,
         "client_elapsed_s": time.perf_counter() - start,
+        "cold_start_id": response.get("cold_start_id"),
+        "index_loaded_at": response.get("index_loaded_at"),
+        "timings_ms": response.get("timings_ms", {}),
+        "function_metrics": response.get("function_metrics", {}),
     }
 
 
@@ -69,6 +100,7 @@ def run_queries(args: argparse.Namespace) -> list[dict]:
     query_file = ROOT / args.query_file
     groundtruth_file = ROOT / args.groundtruth_file
     print(f"Endpoint: {args.endpoint}")
+    print(f"Dataset: {args.dataset}")
     print(f"Query file: {query_file}")
     print(f"Groundtruth file: {groundtruth_file}")
 
@@ -93,6 +125,7 @@ def run_queries(args: argparse.Namespace) -> list[dict]:
         response["recall"] = calculate_recall(response["result_ids"], groundtruth[i].tolist(), args.k)
         return response
 
+    args.batch_start_wall_time = time.time()
     results: list[dict] = []
     with ThreadPoolExecutor(max_workers=args.concurrent_requests) as executor:
         futures = [executor.submit(submit, i) for i in range(len(queries))]
@@ -101,12 +134,44 @@ def run_queries(args: argparse.Namespace) -> list[dict]:
     return results
 
 
-def summarize_run(args: argparse.Namespace, responses: list[dict], elapsed: float) -> dict:
+def cold_start_load_times(responses: list[dict], batch_start_wall_time: float) -> dict[str, float]:
+    cold_start_load_ms: dict[str, float] = {}
+    for item in responses:
+        cold_start_id = item.get("cold_start_id")
+        if cold_start_id is None:
+            continue
+        loaded_at = item.get("index_loaded_at")
+        if loaded_at is not None:
+            try:
+                if float(loaded_at) < batch_start_wall_time:
+                    continue
+            except (TypeError, ValueError):
+                pass
+        metrics = item.get("function_metrics", {})
+        index_load_ms = _as_float(metrics.get("index_load_ms")) if isinstance(metrics, dict) else None
+        cold_start_load_ms.setdefault(str(cold_start_id), index_load_ms or 0.0)
+    return cold_start_load_ms
+
+
+def summarize_run(
+    args: argparse.Namespace,
+    responses: list[dict],
+    elapsed: float,
+    batch_start_wall_time: float,
+) -> dict:
     query_count = len(responses)
     avg_client_ms = sum(item["client_elapsed_s"] for item in responses) * 1000.0 / query_count if query_count else 0.0
+    function_timings = [item.get("timings_ms", {}) for item in responses]
+    cold_start_load_ms = cold_start_load_times(responses, batch_start_wall_time)
+    avg_cold_start_load_ms = sum(cold_start_load_ms.values()) / len(cold_start_load_ms) if cold_start_load_ms else 0.0
+
+    def avg_function_timing(name: str) -> float:
+        return _avg_metric(function_timings, name)
+
     recall = sum(item.get("recall", 0.0) for item in responses) / query_count if query_count else 0.0
     return {
         "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
+        "dataset": args.dataset,
         "query_count": query_count,
         "concurrent_requests": args.concurrent_requests,
         "client_elapsed_s": round(elapsed, 6),
@@ -115,8 +180,37 @@ def summarize_run(args: argparse.Namespace, responses: list[dict], elapsed: floa
         "k": args.k,
         "candidate_k": args.candidate_k,
         "ef_search": args.ef_search,
+        "cold_start_num": len(cold_start_load_ms),
+        "avg_cold_start_load_ms": round(avg_cold_start_load_ms, 3),
         "avg_client_ms": round(avg_client_ms, 3),
+        "avg_function_handler_ms": round(avg_function_timing("handler_total"), 3),
+        "avg_function_search_ms": round(avg_function_timing("search_total"), 3),
+        "avg_function_load_state_ms": round(avg_function_timing("load_state"), 3),
+        "avg_function_index_load_ms": round(avg_function_timing("index_load"), 3),
+        "avg_function_faiss_search_ms": round(avg_function_timing("faiss_search"), 3),
+        "avg_function_rerank_ms": round(avg_function_timing("rerank_total"), 3),
+        "avg_function_memmap_gather_ms": round(avg_function_timing("memmap_gather"), 3),
+        "avg_function_l2_scores_ms": round(avg_function_timing("l2_scores"), 3),
     }
+
+
+def _avg_metric(items: list[dict], name: str) -> float:
+    values = []
+    for item in items:
+        if name not in item:
+            continue
+        try:
+            values.append(float(item[name]))
+        except (TypeError, ValueError):
+            continue
+    return sum(values) / len(values) if values else 0.0
+
+
+def _as_float(value) -> float | None:
+    try:
+        return float(value) if value is not None else None
+    except (TypeError, ValueError):
+        return None
 
 
 def write_rows(path: Path, rows: list[dict]) -> None:
@@ -143,18 +237,27 @@ def _existing_header(path: Path) -> list[str] | None:
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Send SIFT queries to the two-stage baseline")
+    parser = argparse.ArgumentParser(description="Send dataset queries to the two-stage baseline")
     parser.add_argument("--endpoint", default="https://base-lie-search-aobkfnfjxd.cn-hongkong.fcapp.run")
-    parser.add_argument("--query-file", default="data/sift100w/sift_query.fvecs")
-    parser.add_argument("--groundtruth-file", default="data/sift100w/sift_groundtruth.ivecs")
+    parser.add_argument("--dataset", default=os.environ.get("FAASANN_DATASET", DEFAULT_DATASET))
+    parser.add_argument("--query-file", default=None)
+    parser.add_argument("--groundtruth-file", default=None)
     parser.add_argument("--query-num", type=int, default=10)
     parser.add_argument("--concurrent-requests", type=int, default=1)
     parser.add_argument("--k", type=int, default=10)
     parser.add_argument("--candidate-k", type=int, default=120)
     parser.add_argument("--ef-search", type=int, default=80)
     parser.add_argument("--timeout", type=float, default=120.0)
-    parser.add_argument("--log-file", default="baseline/functions/Two_stage_search/test/result/run_queries.csv")
-    return parser.parse_args()
+    parser.add_argument("--log-file", default=None)
+    args = parser.parse_args()
+    args.dataset = normalize_dataset(args.dataset)
+    if args.query_file is None:
+        args.query_file = default_query_file(args.dataset)
+    if args.groundtruth_file is None:
+        args.groundtruth_file = default_groundtruth_file(args.dataset)
+    if args.log_file is None:
+        args.log_file = f"baseline/functions/Two_stage_search/test/result/run_queries_{args.dataset}.csv"
+    return args
 
 
 def main() -> None:
@@ -166,12 +269,13 @@ def main() -> None:
         raise SystemExit(f"Run failed: {exc}") from exc
 
     elapsed = time.perf_counter() - start
-    summary = summarize_run(args, responses, elapsed)
+    summary = summarize_run(args, responses, elapsed, args.batch_start_wall_time)
     write_rows(ROOT / args.log_file, [summary])
     print(
         f"Finished: queries={summary['query_count']}, "
         f"concurrency={summary['concurrent_requests']}, elapsed={summary['client_elapsed_s']:.3f}s, "
-        f"qps={summary['qps_client']:.2f}, recall@{args.k}={summary['recall']:.4f}"
+        f"qps={summary['qps_client']:.2f}, recall@{args.k}={summary['recall']:.4f}, "
+        f"cold_start_num={summary['cold_start_num']}"
     )
 
 

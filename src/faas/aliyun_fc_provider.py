@@ -66,7 +66,17 @@ class AliyunHTTPProvider:
         if not isinstance(data, dict):
             raise ValueError("FaaS response must be a list or an object with 'candidates'")
         if "candidates" in data:
-            return _require_candidates(data["candidates"])
+            candidates = _require_candidates(data["candidates"])
+            cold_start_id = data.get("cold_start_id")
+            if cold_start_id is not None and candidates:
+                candidates[0]["_cold_start_id"] = str(cold_start_id)
+                if data.get("index_loaded_at") is not None:
+                    candidates[0]["_index_loaded_at"] = data["index_loaded_at"]
+            if isinstance(data.get("timings_ms"), dict) and candidates:
+                candidates[0]["_function_timings_ms"] = data["timings_ms"]
+            if isinstance(data.get("function_metrics"), dict) and candidates:
+                candidates[0]["_function_metrics"] = data["function_metrics"]
+            return candidates
         raise ValueError("FaaS response missing required 'candidates' field")
 
 

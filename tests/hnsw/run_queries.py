@@ -1,4 +1,4 @@
-"""向 FaasANN 服务器发送 SIFT 查询并计算 Recall。
+"""向 FaasANN 服务器发送数据集查询并计算 Recall。
 
 这个脚本参考旧项目 /home/qian/faasann/test/hnsw/run.py 的实验方式：
 读取查询向量和 groundtruth，按并发度向当前服务器的 `/search` 接口发送请求，
@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import os
 import sys
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -24,6 +25,32 @@ from vectors.fvecs import read_fvecs
 from vectors.ivecs import read_ivecs
 
 
+DEFAULT_DATASET = "sift100w"
+
+
+def normalize_dataset(dataset: str) -> str:
+    dataset = dataset.strip().strip("/")
+    if not dataset or "/" in dataset or dataset in {".", ".."}:
+        raise SystemExit("dataset must be one directory name, for example: sift100w or gist")
+    return dataset
+
+
+def dataset_file_prefix(dataset: str) -> str:
+    if dataset == "sift100w":
+        return "sift"
+    return dataset
+
+
+def default_query_file(dataset: str) -> str:
+    prefix = dataset_file_prefix(dataset)
+    return f"data/{dataset}/{prefix}_query.fvecs"
+
+
+def default_groundtruth_file(dataset: str) -> str:
+    prefix = dataset_file_prefix(dataset)
+    return f"data/{dataset}/{prefix}_groundtruth.ivecs"
+
+
 def post_json(url: str, payload: dict, timeout: float) -> dict:
     request = Request(
         url,
@@ -31,8 +58,12 @@ def post_json(url: str, payload: dict, timeout: float) -> dict:
         headers={"content-type": "application/json"},
         method="POST",
     )
-    with urlopen(request, timeout=timeout) as response:
-        return json.loads(response.read().decode("utf-8"))
+    try:
+        with urlopen(request, timeout=timeout) as response:
+            return json.loads(response.read().decode("utf-8"))
+    except HTTPError as exc:
+        body = exc.read().decode("utf-8", errors="replace")
+        raise RuntimeError(f"HTTP {exc.code}: {body}") from exc
 
 
 def send_one_query(
@@ -86,20 +117,32 @@ def run_queries(
     send_vectors: bool,
     concurrent_requests: int,
     timeout: float,
+    continue_on_error: bool,
 ) -> list[dict]:
     def submit(i: int) -> dict:
         query_id = i
         vector = query_vectors[query_id].astype("float32").tolist() if send_vectors else None
-        response = send_one_query(
-            server_url=server_url,
-            query_id=query_id,
-            vector=vector,
-            k=k,
-            candidate_k=candidate_k,
-            ef_search=ef_search,
-            use_faas=use_faas,
-            timeout=timeout,
-        )
+        try:
+            response = send_one_query(
+                server_url=server_url,
+                query_id=query_id,
+                vector=vector,
+                k=k,
+                candidate_k=candidate_k,
+                ef_search=ef_search,
+                use_faas=use_faas,
+                timeout=timeout,
+            )
+        except Exception as exc:
+            if not continue_on_error:
+                raise
+            return {
+                "query_id": query_id,
+                "result_ids": [],
+                "recall": 0.0,
+                "error": str(exc),
+                "client_elapsed_s": 0.0,
+            }
         result_ids = [int(item["id"]) for item in response.get("results", [])]
         response["query_id"] = query_id
         response["result_ids"] = result_ids
@@ -114,19 +157,55 @@ def run_queries(
     return results
 
 
-def summarize_run(responses: list[dict], elapsed: float, k: int, concurrent_requests: int) -> dict:
+def cold_start_load_times(responses: list[dict], batch_start_wall_time: float) -> dict[str, float]:
+    cold_start_load_ms: dict[str, float] = {}
+    for item in responses:
+        cold_start_id = item.get("cold_start_id")
+        if cold_start_id is None:
+            continue
+        loaded_at = item.get("index_loaded_at")
+        if loaded_at is not None:
+            try:
+                if float(loaded_at) < batch_start_wall_time:
+                    continue
+            except (TypeError, ValueError):
+                pass
+        metrics = item.get("function_metrics", {})
+        index_load_ms = _as_float(metrics.get("index_load_ms")) if isinstance(metrics, dict) else None
+        cold_start_load_ms.setdefault(str(cold_start_id), index_load_ms or 0.0)
+    return cold_start_load_ms
+
+
+def summarize_run(
+    responses: list[dict],
+    elapsed: float,
+    k: int,
+    concurrent_requests: int,
+    dataset: str,
+    batch_start_wall_time: float,
+) -> dict:
     query_count = len(responses)
     timings = [item.get("timings_ms", {}) for item in responses]
+    function_timings = [item.get("function_timings_ms", {}) for item in responses]
     plans = [item.get("plan", {}) for item in responses]
+    cold_start_load_ms = cold_start_load_times(responses, batch_start_wall_time)
+    avg_cold_start_load_ms = sum(cold_start_load_ms.values()) / len(cold_start_load_ms) if cold_start_load_ms else 0.0
 
     def avg_timing(name: str) -> float:
-        values = [float(item[name]) for item in timings if name in item]
-        return sum(values) / len(values) if values else 0.0
+        return _avg_metric(timings, name)
 
-    recall = sum(item.get("recall", 0.0) for item in responses) / query_count if query_count else 0.0
+    def avg_function_timing(name: str) -> float:
+        return _avg_metric(function_timings, name)
+
+    error_count = sum(1 for item in responses if "error" in item)
+    success_count = query_count - error_count
+    recall = sum(item.get("recall", 0.0) for item in responses if "error" not in item) / success_count if success_count else 0.0
     return {
         "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
+        "dataset": dataset,
         "query_count": query_count,
+        "success_count": success_count,
+        "error_count": error_count,
         "concurrent_requests": concurrent_requests,
         "client_elapsed_s": round(elapsed, 6),
         "qps_client": round(query_count / elapsed, 2) if elapsed > 0 else 0.0,
@@ -134,20 +213,39 @@ def summarize_run(responses: list[dict], elapsed: float, k: int, concurrent_requ
         "k": k,
         "local_count": sum(1 for plan in plans if plan.get("mode") == "local"),
         "faas_count": sum(1 for plan in plans if plan.get("mode") == "faas"),
-        "faas_reasons": json.dumps(_count_plan_reasons(plans), ensure_ascii=False),
+        "cold_start_num": len(cold_start_load_ms),
+        "avg_cold_start_load_ms": round(avg_cold_start_load_ms, 3),
         "avg_total_ms": round(avg_timing("total"), 3),
         "avg_candidates_ms": round(avg_timing("candidates"), 3),
         "avg_rerank_ms": round(avg_timing("rerank"), 3),
         "avg_remote_invoke_ms": round(avg_timing("remote_invoke"), 3),
+        "avg_function_handler_ms": round(avg_function_timing("handler_total"), 3),
+        "avg_function_search_ms": round(avg_function_timing("search_total"), 3),
+        "avg_function_load_state_ms": round(avg_function_timing("load_state"), 3),
+        "avg_function_index_load_ms": round(avg_function_timing("index_load"), 3),
+        "avg_function_faiss_search_ms": round(avg_function_timing("faiss_search"), 3),
+        "avg_function_format_ms": round(avg_function_timing("format_candidates"), 3),
+        "avg_remote_queue_estimate_ms": round(avg_function_timing("remote_queue_estimate"), 3),
     }
 
 
-def _count_plan_reasons(plans: list[dict]) -> dict[str, int]:
-    counts: dict[str, int] = {}
-    for plan in plans:
-        reason = str(plan.get("reason", "unknown"))
-        counts[reason] = counts.get(reason, 0) + 1
-    return counts
+def _avg_metric(items: list[dict], name: str) -> float:
+    values = []
+    for item in items:
+        if name not in item:
+            continue
+        try:
+            values.append(float(item[name]))
+        except (TypeError, ValueError):
+            continue
+    return sum(values) / len(values) if values else 0.0
+
+
+def _as_float(value) -> float | None:
+    try:
+        return float(value) if value is not None else None
+    except (TypeError, ValueError):
+        return None
 
 
 def write_rows(path: Path, rows: list[dict]) -> None:
@@ -174,10 +272,11 @@ def _existing_header(path: Path) -> list[str] | None:
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Send SIFT queries to FaasANN /search and calculate recall")
+    parser = argparse.ArgumentParser(description="Send dataset queries to FaasANN /search and calculate recall")
     parser.add_argument("--server-url", default="http://127.0.0.1:8080")
-    parser.add_argument("--query-file", default="data/sift100w/sift_query.fvecs")
-    parser.add_argument("--groundtruth-file", default="data/sift100w/sift_groundtruth.ivecs")
+    parser.add_argument("--dataset", default=os.environ.get("FAASANN_DATASET", DEFAULT_DATASET))
+    parser.add_argument("--query-file", default=None)
+    parser.add_argument("--groundtruth-file", default=None)
     parser.add_argument("--query-num", type=int, default=1000)
     parser.add_argument("--concurrent-requests", type=int, default=20)
     parser.add_argument("--k", type=int, default=10)
@@ -190,7 +289,7 @@ def parse_args() -> argparse.Namespace:
         dest="send_vectors",
         action="store_true",
         default=True,
-        help="send raw query vectors from sift_query.fvecs; this is the correct recall mode",
+        help="send raw query vectors from the selected dataset query file; this is the correct recall mode",
     )
     parser.add_argument(
         "--send-query-id",
@@ -199,8 +298,17 @@ def parse_args() -> argparse.Namespace:
         help="send query_id instead of query vector; useful only for server debugging",
     )
     parser.add_argument("--timeout", type=float, default=60.0)
-    parser.add_argument("--log-file", default="logs/run_queries.csv")
-    return parser.parse_args()
+    parser.add_argument("--continue-on-error", action="store_true")
+    parser.add_argument("--log-file", default=None)
+    args = parser.parse_args()
+    args.dataset = normalize_dataset(args.dataset)
+    if args.query_file is None:
+        args.query_file = default_query_file(args.dataset)
+    if args.groundtruth_file is None:
+        args.groundtruth_file = default_groundtruth_file(args.dataset)
+    if args.log_file is None:
+        args.log_file = f"logs/run_queries_{args.dataset}.csv"
+    return args
 
 
 def main() -> None:
@@ -210,6 +318,7 @@ def main() -> None:
     log_file = ROOT / args.log_file
 
     print(f"Server URL: {args.server_url}")
+    print(f"Dataset: {args.dataset}")
     print(f"Query file: {query_file}")
     print(f"Groundtruth file: {groundtruth_file}")
     print(f"Log file: {log_file}")
@@ -228,6 +337,7 @@ def main() -> None:
         f"Sending {len(queries)} queries with concurrency={args.concurrent_requests} "
         f"(rough per-worker queries={len(queries) / max(1, args.concurrent_requests):.1f})"
     )
+    batch_start_wall_time = time.time()
     start_t = time.perf_counter()
     try:
         responses = run_queries(
@@ -242,22 +352,27 @@ def main() -> None:
             send_vectors=args.send_vectors,
             concurrent_requests=args.concurrent_requests,
             timeout=args.timeout,
+            continue_on_error=args.continue_on_error,
         )
-    except (HTTPError, URLError, TimeoutError) as exc:
+    except (HTTPError, URLError, TimeoutError, RuntimeError) as exc:
         raise SystemExit(f"Run failed: {exc}") from exc
 
     elapsed = time.perf_counter() - start_t
-    summary = summarize_run(responses, elapsed, args.k, args.concurrent_requests)
+    summary = summarize_run(responses, elapsed, args.k, args.concurrent_requests, args.dataset, batch_start_wall_time)
     write_rows(log_file, [summary])
     print(
         f"Finished: queries={summary['query_count']}, "
+        f"success={summary['success_count']}, errors={summary['error_count']}, "
         f"concurrency={summary['concurrent_requests']}, "
         f"elapsed={summary['client_elapsed_s']:.3f}s, "
         f"qps={summary['qps_client']:.2f}, "
         f"average_recall@{args.k}={summary['recall']:.4f}, "
         f"local={summary['local_count']}, faas={summary['faas_count']}, "
-        f"reasons={summary['faas_reasons']}"
+        f"cold_start_num={summary['cold_start_num']}"
     )
+    errors = [item for item in responses if "error" in item]
+    for item in errors[:5]:
+        print(f"Error query_id={item['query_id']}: {item['error']}")
     print(f"Log saved to {log_file}")
 
 

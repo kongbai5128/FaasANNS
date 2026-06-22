@@ -17,7 +17,17 @@ class DummyProvider:
 
     async def invoke(self, payload) -> list[dict]:
         self.payload_json = payload.to_json()
-        return [{"id": 3}, {"id": 0}, {"id": 2}]
+        return [
+            {
+                "id": 3,
+                "_cold_start_id": "cold-1",
+                "_index_loaded_at": 123.5,
+                "_function_timings_ms": {"handler_total": 1.0, "faiss_search": 0.5},
+                "_function_metrics": {"candidate_count": 3},
+            },
+            {"id": 0},
+            {"id": 2},
+        ]
 
     async def warmup(self) -> None:
         return None
@@ -45,7 +55,7 @@ def search_config() -> SearchConfig:
         hnsw=HNSWConfig(
             default_k=10,
             candidate_k=120,
-            hnsw_index_path="data/index/full/full_hnsw.bin",
+            hnsw_index_path="data/test/index/full/full_hnsw.bin",
             hnsw_m=32,
             hnsw_ef_construction=200,
             hnsw_ef_search=80,
@@ -82,5 +92,10 @@ def test_search_service_reranks_remote_pq_candidates_on_vm() -> None:
         }
         assert result.results[0].id == 0
         assert len(result.results) == 2
+        assert result.to_json()["cold_start_id"] == "cold-1"
+        assert result.to_json()["index_loaded_at"] == 123.5
+        assert result.to_json()["function_timings_ms"]["handler_total"] == 1.0
+        assert result.to_json()["function_timings_ms"]["remote_queue_estimate"] >= 0.0
+        assert result.to_json()["function_metrics"] == {"candidate_count": 3}
 
     asyncio.run(scenario())

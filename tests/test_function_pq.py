@@ -25,7 +25,7 @@ def test_function_faiss_hnswpq_search_returns_candidates(tmp_path, monkeypatch) 
     index.add(vectors)
     faiss.write_index(index, str(pq_dir / "faiss_hnswpq.index"))
 
-    monkeypatch.setenv("FAASANN_DATA_ROOT", str(tmp_path))
+    monkeypatch.setenv("FAASANN_PQ_INDEX_PATH", str(pq_dir / "faiss_hnswpq.index"))
     module = _load_index_loader()
 
     candidates = module.search(query=vectors[0].tolist(), candidate_k=5, ef_search=20)
@@ -33,6 +33,28 @@ def test_function_faiss_hnswpq_search_returns_candidates(tmp_path, monkeypatch) 
     assert len(candidates) == 5
     assert candidates[0]["id"] >= 0
     assert candidates[0]["approx_score"] >= 0.0
+
+    status = module.index_status()
+    assert status["cold_start_id"]
+    assert isinstance(status["index_loaded_at"], float)
+
+
+def test_function_faiss_hnswpq_uses_dataset_from_env(tmp_path, monkeypatch) -> None:
+    pq_dir = tmp_path / "gist" / "index" / "full" / "pq"
+    pq_dir.mkdir(parents=True)
+
+    vectors = np.random.default_rng(1).random((160, 4), dtype=np.float32)
+    index = faiss.index_factory(4, "HNSW4,PQ1x2", faiss.METRIC_L2)
+    index.train(vectors)
+    index.add(vectors)
+    faiss.write_index(index, str(pq_dir / "faiss_hnswpq.index"))
+
+    monkeypatch.setenv("FAASANN_DATA_ROOT", str(tmp_path))
+    monkeypatch.setenv("FAASANN_DATASET", "gist")
+    module = _load_index_loader()
+
+    assert module.index_status()["dataset"] == "gist"
+    assert module.index_status()["index_path"] == str(pq_dir / "faiss_hnswpq.index")
 
 
 def _load_index_loader():

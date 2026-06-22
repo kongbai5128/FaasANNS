@@ -1,0 +1,13 @@
+dataset,method,method_label,cold_state,run_count,latency_ms,qps,recall,cold_start_num_avg,latency_source
+gist,faasann,FaasANN,cold,1,3380.398,20.78,0.9903,2,avg_total_ms
+gist,faasann,FaasANN,warm,2,3068.1639999999998,17.85,0.9903,0,avg_total_ms
+gist,full_search,Full Search,cold,1,8565.705,10.49,0.9905,3,avg_client_ms
+gist,full_search,Full Search,warm,2,3092.67,17.91,0.9905,0,avg_client_ms
+gist,two_stage,Two-stage,cold,1,11309.217,8.05,0.9903,4,avg_client_ms
+gist,two_stage,Two-stage,warm,2,3415.0475,17.854999999999997,0.9903,0,avg_client_ms
+sift100w,faasann,FaasANN,cold,1,313.459,129.7,0.9905,2,avg_total_ms
+sift100w,faasann,FaasANN,warm,2,48.3675,179.65,0.9903,0,avg_total_ms
+sift100w,full_search,Full Search,cold,1,1433.264,60.9,0.9907,3,avg_client_ms
+sift100w,full_search,Full Search,warm,2,318.154,188.39,0.9907,0,avg_client_ms
+sift100w,two_stage,Two-stage,cold,1,1384.583,62.64,0.9901,1,avg_client_ms
+sift100w,two_stage,Two-stage,warm,2,470.555,145.495,0.9901,0,avg_client_ms

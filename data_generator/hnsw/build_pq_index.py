@@ -5,7 +5,7 @@ Output file:
 
 python data_generator/hnsw/build_pq_index.py \
   --src data/sift100w/sift_base.fvecs \
-  --dst data/index/full/pq \
+  --dst data/sift100w/index/full/pq \
   --subspaces 16 \
   --codebook-size 256 \
   --train-size 1000000 \
@@ -15,6 +15,20 @@ python data_generator/hnsw/build_pq_index.py \
   --hnsw-m 32 \
   --hnsw-ef-construction 200 \
   --hnsw-ef-search 160 \
+  --hnsw-batch-size 50000
+  
+python data_generator/hnsw/build_pq_index.py \
+  --src data/gist/gist_base.fvecs \
+  --dst data/gist/index/full/pq \
+  --subspaces 120 \
+  --codebook-size 256 \
+  --train-size 1000000 \
+  --iterations 50 \
+  --seed 0 \
+  --hnsw-space l2 \
+  --hnsw-m 48 \
+  --hnsw-ef-construction 1250 \
+  --hnsw-ef-search 1000 \
   --hnsw-batch-size 50000
 """
 
@@ -124,19 +138,29 @@ def save_index(args: argparse.Namespace) -> None:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Build Faiss HNSW-PQ index for FaasANN cloud functions")
-    parser.add_argument("--src", required=True)
-    parser.add_argument("--dst", required=True)
-    parser.add_argument("--max-vectors", type=int)
-    parser.add_argument("--subspaces", type=int, required=True)
-    parser.add_argument("--codebook-size", type=int, required=True)
-    parser.add_argument("--train-size", type=int, required=True)
-    parser.add_argument("--iterations", type=int, required=True)
-    parser.add_argument("--seed", type=int, required=True)
-    parser.add_argument("--hnsw-space", required=True, choices=["l2"])
-    parser.add_argument("--hnsw-m", type=int, required=True)
-    parser.add_argument("--hnsw-ef-construction", type=int, required=True)
-    parser.add_argument("--hnsw-ef-search", type=int, required=True)
-    parser.add_argument("--hnsw-batch-size", type=int, required=True)
+    parser.add_argument("--src", required=True, help="input .fvecs base vectors")
+    parser.add_argument("--dst", required=True, help="output directory for faiss_hnswpq.index")
+    parser.add_argument("--max-vectors", type=int, help="optional cap for debugging with a smaller subset")
+    parser.add_argument("--subspaces", type=int, required=True, help="PQ subquantizers M; dimension must divide this value")
+    parser.add_argument("--codebook-size", type=int, required=True, help="centroids per PQ subspace; 256 means 8 bits/code")
+    parser.add_argument("--train-size", type=int, required=True, help="number of vectors sampled to train PQ codebooks")
+    parser.add_argument("--iterations", type=int, required=True, help="k-means iterations for PQ training")
+    parser.add_argument("--seed", type=int, required=True, help="random seed for deterministic training sampling")
+    parser.add_argument("--hnsw-space", required=True, choices=["l2"], help="distance metric for the HNSW graph")
+    parser.add_argument("--hnsw-m", type=int, required=True, help="HNSW graph connectivity; higher improves recall and memory use")
+    parser.add_argument(
+        "--hnsw-ef-construction",
+        type=int,
+        required=True,
+        help="HNSW build-time search width; higher improves graph quality and build time",
+    )
+    parser.add_argument(
+        "--hnsw-ef-search",
+        type=int,
+        required=True,
+        help="default HNSW query-time search width stored in the index; requests may override it",
+    )
+    parser.add_argument("--hnsw-batch-size", type=int, required=True, help="vectors added per batch during index construction")
     return parser.parse_args()
 
 

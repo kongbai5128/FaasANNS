@@ -49,7 +49,7 @@ Build the local VM HNSW index:
 ```bash
 python data_generator/hnsw/constrained_kmeans_w_clusters.py \
   --src data/sift100w/sift_base.fvecs \
-  --dst data/index/full \
+  --dst data/sift100w/index/full \
   --k 1 \
   --m 32 \
   --ef-construction 200 \
@@ -61,7 +61,7 @@ Build the Function Compute Faiss HNSW-PQ index:
 ```bash
 python data_generator/hnsw/build_pq_index.py \
   --src data/sift100w/sift_base.fvecs \
-  --dst data/index/full/pq \
+  --dst data/sift100w/index/full/pq \
   --subspaces 16 \
   --codebook-size 256 \
   --train-size 1000000 \
@@ -74,7 +74,25 @@ python data_generator/hnsw/build_pq_index.py \
   --hnsw-batch-size 50000
 ```
 
-Upload `data/index/full/pq/faiss_hnswpq.index` to the function mount path.
+For GIST, use more PQ subspaces because GIST is 960-dimensional:
+
+```bash
+python data_generator/hnsw/build_pq_index.py \
+  --src data/gist/gist_base.fvecs \
+  --dst data/gist/index/full/pq \
+  --subspaces 120 \
+  --codebook-size 256 \
+  --train-size 1000000 \
+  --iterations 50 \
+  --seed 0 \
+  --hnsw-space l2 \
+  --hnsw-m 48 \
+  --hnsw-ef-construction 400 \
+  --hnsw-ef-search 1000 \
+  --hnsw-batch-size 50000
+```
+
+Upload `data/sift100w/index/full/pq/faiss_hnswpq.index` to the function mount path.
 
 ## Run
 

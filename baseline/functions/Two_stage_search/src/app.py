@@ -17,8 +17,25 @@ VENDOR_DIR = PACKAGE_DIR / "python"
 if VENDOR_DIR.exists():
     sys.path.insert(0, str(VENDOR_DIR))
 
+DEFAULT_DATASET = "sift100w"
+
+
+def _configure_dataset_from_argv(argv: list[str]) -> str:
+    if len(argv) > 2:
+        raise SystemExit("usage: python3 app.py [dataset]")
+
+    dataset = argv[1] if len(argv) == 2 else os.environ.get("FAASANN_DATASET", DEFAULT_DATASET)
+    dataset = dataset.strip().strip("/")
+    if not dataset or "/" in dataset or dataset in {".", ".."}:
+        raise SystemExit("dataset must be one directory name, for example: sift100w or gist")
+    os.environ["FAASANN_DATASET"] = dataset
+    return dataset
+
+
+DATASET = _configure_dataset_from_argv(sys.argv)
+
 from handler import handler as two_stage_handler
-from index_loader import index_status
+from index_loader import index_status, warmup
 
 
 DEFAULT_PORT = 9000
@@ -60,9 +77,12 @@ class TwoStageHTTPHandler(BaseHTTPRequestHandler):
 
 
 def main() -> None:
+    print(f"two_stage baseline loading index before listening, dataset={DATASET}", flush=True)
+    warmup()
+    print(f"two_stage baseline index loaded: {index_status()}", flush=True)
     port = int(os.environ.get("FC_SERVER_PORT") or os.environ.get("PORT") or DEFAULT_PORT)
     server = ThreadingHTTPServer(("0.0.0.0", port), TwoStageHTTPHandler)
-    print(f"two_stage baseline listening on 0.0.0.0:{port}", flush=True)
+    print(f"two_stage baseline listening on 0.0.0.0:{port}, dataset={DATASET}", flush=True)
     server.serve_forever()
 
 

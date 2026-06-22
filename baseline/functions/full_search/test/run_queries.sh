@@ -12,14 +12,26 @@ fi
 cd "${PROJECT_ROOT}"
 export no_proxy="*"
 export NO_PROXY="*"
+DATASET="${FAASANN_DATASET:-sift100w}"
+# sift100w 0.99
+# exec "${PYTHON}" baseline/functions/full_search/test/run_queries.py \
+#   --endpoint "http://base-lil-search-mbidkbhcit.cn-hongkong.fcapp.run" \
+#   --dataset "${DATASET}" \
+#   --query-num 1000 \
+#   --concurrent-requests 100 \
+#   --k 10 \
+#   --candidate-k 10 \
+#   --ef-search 99 \
+#   "$@"
+
+
+# gist 0.99
 exec "${PYTHON}" baseline/functions/full_search/test/run_queries.py \
   --endpoint "http://base-lil-search-mbidkbhcit.cn-hongkong.fcapp.run" \
-  --query-file "data/sift100w/sift_query.fvecs" \
-  --groundtruth-file "data/sift100w/sift_groundtruth.ivecs" \
-  --log-file "baseline/functions/full_search/test/result/run_queries.csv" \
+  --dataset "${DATASET}" \
   --query-num 1000 \
   --concurrent-requests 100 \
   --k 10 \
   --candidate-k 10 \
-  --ef-search 100 \
+  --ef-search 250 \
   "$@"

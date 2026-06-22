@@ -6,13 +6,21 @@
 服务端本地路径不做分区，因此 `--k 1` 模式不会导入 k_means_constrained 或 matplotlib。
 只有后续需要分区实验时，`--k > 1` 才会走 constrained k-means 并生成 partition_*.bin。
 
-python data_generator/constrained_kmeans_w_clusters.py \
+python data_generator/hnsw/constrained_kmeans_w_clusters.py \
   --src data/sift100w/sift_base.fvecs \
-  --dst data/index/full \
+  --dst data/sift100w/index/full \
   --k 1 \
   --m 32 \
   --ef-construction 200 \
   --ef-search 80
+
+python data_generator/hnsw/constrained_kmeans_w_clusters.py \
+  --src data/gist/gist_base.fvecs \
+  --dst data/gist/index/full \
+  --k 1 \
+  --m 48 \
+  --ef-construction 1250 \
+  --ef-search 1000
 """
 
 from __future__ import annotations

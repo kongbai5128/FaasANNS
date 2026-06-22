@@ -13,7 +13,7 @@ def search_config(**overrides) -> SearchConfig:
     hnsw = HNSWConfig(
         default_k=10,
         candidate_k=120,
-        hnsw_index_path="data/index/full/full_hnsw.bin",
+        hnsw_index_path="data/test/index/full/full_hnsw.bin",
         hnsw_m=32,
         hnsw_ef_construction=200,
         hnsw_ef_search=80,

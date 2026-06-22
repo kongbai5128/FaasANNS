@@ -1,0 +1,19 @@
+timestamp,dataset,method,method_label,cold_state,cold_start_num,latency_ms,latency_source,qps,recall,query_count,candidate_k,ef_search,source_file
+2026-06-20 18:00:57,gist,full_search,Full Search,cold,3,8565.705,avg_client_ms,10.49,0.9905,1000,10,250,baseline/functions/full_search/test/result/run_queries_gist.csv
+2026-06-20 18:05:07,gist,full_search,Full Search,warm,0,3141.933,avg_client_ms,17.78,0.9905,1000,10,250,baseline/functions/full_search/test/result/run_queries_gist.csv
+2026-06-20 18:08:40,gist,full_search,Full Search,warm,0,3043.407,avg_client_ms,18.04,0.9905,1000,10,250,baseline/functions/full_search/test/result/run_queries_gist.csv
+2026-06-20 18:36:03,sift100w,full_search,Full Search,cold,3,1433.264,avg_client_ms,60.9,0.9907,1000,10,99,baseline/functions/full_search/test/result/run_queries_sift100w.csv
+2026-06-20 18:36:16,sift100w,full_search,Full Search,warm,0,318.243,avg_client_ms,188.64,0.9907,1000,10,99,baseline/functions/full_search/test/result/run_queries_sift100w.csv
+2026-06-20 18:36:28,sift100w,full_search,Full Search,warm,0,318.065,avg_client_ms,188.14,0.9907,1000,10,99,baseline/functions/full_search/test/result/run_queries_sift100w.csv
+2026-06-20 18:11:00,gist,two_stage,Two-stage,cold,4,11309.217,avg_client_ms,8.05,0.9903,1000,550,550,baseline/functions/Two_stage_search/test/result/run_queries_gist.csv
+2026-06-20 18:12:02,gist,two_stage,Two-stage,warm,0,3411.668,avg_client_ms,17.99,0.9903,1000,550,550,baseline/functions/Two_stage_search/test/result/run_queries_gist.csv
+2026-06-20 16:38:26,gist,two_stage,Two-stage,warm,0,3418.427,avg_client_ms,17.72,0.9903,1000,550,550,baseline/functions/Two_stage_search/test/result/run_queries_gist.csv
+2026-06-20 18:37:07,sift100w,two_stage,Two-stage,cold,1,1384.583,avg_client_ms,62.64,0.9901,1000,221,221,baseline/functions/Two_stage_search/test/result/run_queries_sift100w.csv
+2026-06-20 18:37:23,sift100w,two_stage,Two-stage,warm,0,478.231,avg_client_ms,143.33,0.9901,1000,221,221,baseline/functions/Two_stage_search/test/result/run_queries_sift100w.csv
+2026-06-20 18:37:32,sift100w,two_stage,Two-stage,warm,0,462.879,avg_client_ms,147.66,0.9901,1000,221,221,baseline/functions/Two_stage_search/test/result/run_queries_sift100w.csv
+2026-06-20 18:15:02,gist,faasann,FaasANN,cold,2,3380.398,avg_total_ms,20.78,0.9903,1000,,,logs/run_queries_gist.csv
+2026-06-20 18:16:05,gist,faasann,FaasANN,warm,0,3069.227,avg_total_ms,17.84,0.9903,1000,,,logs/run_queries_gist.csv
+2026-06-20 18:18:17,gist,faasann,FaasANN,warm,0,3067.101,avg_total_ms,17.86,0.9903,1000,,,logs/run_queries_gist.csv
+2026-06-20 18:31:40,sift100w,faasann,FaasANN,cold,2,313.459,avg_total_ms,129.7,0.9905,1000,,,logs/run_queries_sift100w.csv
+2026-06-20 18:32:17,sift100w,faasann,FaasANN,warm,0,49.906,avg_total_ms,180.44,0.9903,1000,,,logs/run_queries_sift100w.csv
+2026-06-20 18:32:42,sift100w,faasann,FaasANN,warm,0,46.829,avg_total_ms,178.86,0.9903,1000,,,logs/run_queries_sift100w.csv

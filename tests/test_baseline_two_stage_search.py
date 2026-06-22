@@ -17,7 +17,7 @@ INDEX_LOADER = ROOT / "baseline" / "functions" / "Two_stage_search" / "src" / "i
 
 def test_two_stage_search_reranks_pq_candidates(tmp_path, monkeypatch) -> None:
     index_path = tmp_path / "faiss_hnswpq.index"
-    base_path = tmp_path / "sift_base.fvecs"
+    base_path = tmp_path / "vectors_base.fvecs"
     index_path.write_bytes(b"fake")
     vectors = np.array(
         [
@@ -29,7 +29,12 @@ def test_two_stage_search_reranks_pq_candidates(tmp_path, monkeypatch) -> None:
         dtype=np.float32,
     )
     _write_fvecs(base_path, vectors)
-    _install_fake_faiss(vector_count=len(vectors), dimension=vectors.shape[1], candidate_ids=[2, 1, 0])
+    _install_fake_faiss(
+        monkeypatch,
+        vector_count=len(vectors),
+        dimension=vectors.shape[1],
+        candidate_ids=[2, 1, 0],
+    )
 
     monkeypatch.setenv("FAASANN_PQ_INDEX_PATH", str(index_path))
     monkeypatch.setenv("FAASANN_BASE_PATH", str(base_path))
@@ -40,6 +45,10 @@ def test_two_stage_search_reranks_pq_candidates(tmp_path, monkeypatch) -> None:
     assert [item["id"] for item in results] == [1, 0]
     assert [item["score"] for item in results] == [1.0, 1.0]
 
+    status = module.index_status()
+    assert status["cold_start_id"]
+    assert isinstance(status["index_loaded_at"], float)
+
 
 def _write_fvecs(path: Path, vectors: np.ndarray) -> None:
     dimension = vectors.shape[1]
@@ -49,7 +58,7 @@ def _write_fvecs(path: Path, vectors: np.ndarray) -> None:
             vector.astype(np.float32, copy=False).tofile(fp)
 
 
-def _install_fake_faiss(vector_count: int, dimension: int, candidate_ids: list[int]) -> None:
+def _install_fake_faiss(monkeypatch, vector_count: int, dimension: int, candidate_ids: list[int]) -> None:
     class FakeIndex:
         d = dimension
         ntotal = vector_count
@@ -68,7 +77,7 @@ def _install_fake_faiss(vector_count: int, dimension: int, candidate_ids: list[i
         SearchParametersHNSW=SearchParametersHNSW,
         read_index=lambda path: FakeIndex(),
     )
-    sys.modules["faiss"] = fake_faiss
+    monkeypatch.setitem(sys.modules, "faiss", fake_faiss)
 
 
 def _load_index_loader():

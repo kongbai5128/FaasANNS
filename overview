@@ -25,11 +25,11 @@ FaasANN 查询流程总览
 
 完整 HNSW 索引文件：
 
-  data/index/full/full_hnsw.bin
+  data/sift100w/index/full/full_hnsw.bin
 
 索引元信息文件：
 
-  data/index/full/full_hnsw.meta.json
+  data/sift100w/index/full/full_hnsw.meta.json
 
 注意：
 
@@ -105,11 +105,11 @@ src/scaling:
 
    服务器优先尝试加载：
 
-     data/index/full/full_hnsw.bin
+     data/sift100w/index/full/full_hnsw.bin
 
    如果旁边存在：
 
-     data/index/full/full_hnsw.meta.json
+     data/sift100w/index/full/full_hnsw.meta.json
 
    则校验：
 
@@ -303,7 +303,7 @@ Planner 同时会估算：
 
 当前本地 index 优先使用 hnswlib，并从下面文件加载：
 
-  data/index/full/full_hnsw.bin
+  data/sift100w/index/full/full_hnsw.bin
 
 HNSW 返回的是候选 id 和近似距离，例如：
 

@@ -37,6 +37,10 @@ def test_baseline_hnsw_search_returns_candidates(tmp_path, monkeypatch) -> None:
     assert [item["id"] for item in candidates] == [0, 1, 2]
     assert [item["approx_score"] for item in candidates] == [1.0, 1.0, 10.0]
 
+    status = module.index_status()
+    assert status["cold_start_id"]
+    assert isinstance(status["index_loaded_at"], float)
+
 
 def _write_hnsw_index(path: Path, vectors: np.ndarray) -> None:
     index = hnswlib.Index(space="l2", dim=vectors.shape[1])

@@ -30,14 +30,27 @@ class SearchResult:
     results: list[ScoredVector]
     plan: OffloadPlan
     timings: dict[str, float]
+    cold_start_id: str | None = None
+    index_loaded_at: float | None = None
+    function_timings_ms: dict | None = None
+    function_metrics: dict | None = None
 
     def to_json(self) -> dict:
-        return {
+        data = {
             "request_id": self.request_id,
             "results": [asdict(item) for item in self.results],
-            "plan": asdict(self.plan),
+            "plan": {"mode": self.plan.mode},
             "timings_ms": {key: round(value * 1000.0, 3) for key, value in self.timings.items()},
         }
+        if self.cold_start_id is not None:
+            data["cold_start_id"] = self.cold_start_id
+        if self.index_loaded_at is not None:
+            data["index_loaded_at"] = self.index_loaded_at
+        if self.function_timings_ms is not None:
+            data["function_timings_ms"] = self.function_timings_ms
+        if self.function_metrics is not None:
+            data["function_metrics"] = self.function_metrics
+        return data
 
 
 class SearchService:
@@ -110,6 +123,15 @@ class SearchService:
             else:
                 candidates = await self._run_local_candidates(query, candidate_k, ef_search)
         timings["candidates"] = candidate_elapsed.seconds
+        if plan.mode == "faas":
+            cold_start_id, index_loaded_at, function_timings_ms, function_metrics = _extract_function_metadata(candidates)
+            if function_timings_ms is not None and "remote_invoke" in timings:
+                handler_total_ms = _as_float(function_timings_ms.get("handler_total"))
+                if handler_total_ms is not None:
+                    queue_ms = timings["remote_invoke"] * 1000.0 - handler_total_ms
+                    function_timings_ms["remote_queue_estimate"] = round(max(0.0, queue_ms), 3)
+        else:
+            cold_start_id, index_loaded_at, function_timings_ms, function_metrics = (None, None, None, None)
         self.metrics.candidate_latency.record(candidate_elapsed.seconds)
 
         # 第二阶段始终在 VM 上用原始向量 exact rerank，最终只返回 top-k。
@@ -119,7 +141,16 @@ class SearchService:
         self.metrics.rerank_latency.record(rerank_elapsed.seconds)
         timings["total"] = time.perf_counter() - total_start
 
-        return SearchResult(request_id=request_id, results=results, plan=plan, timings=timings)
+        return SearchResult(
+            request_id=request_id,
+            results=results,
+            plan=plan,
+            timings=timings,
+            cold_start_id=cold_start_id,
+            index_loaded_at=index_loaded_at,
+            function_timings_ms=function_timings_ms,
+            function_metrics=function_metrics,
+        )
 
     async def _search_faas(
         self,
@@ -160,3 +191,28 @@ class SearchService:
             candidates,
             k,
         )
+
+
+def _extract_function_metadata(candidates: list[dict]) -> tuple[str | None, float | None, dict | None, dict | None]:
+    for item in candidates:
+        cold_start_id = item.get("_cold_start_id")
+        function_timings = item.get("_function_timings_ms")
+        function_metrics = item.get("_function_metrics")
+        if cold_start_id is None and function_timings is None and function_metrics is None:
+            continue
+        loaded_at = item.get("_index_loaded_at")
+        loaded_at_value = _as_float(loaded_at)
+        return (
+            str(cold_start_id) if cold_start_id is not None else None,
+            loaded_at_value,
+            dict(function_timings) if isinstance(function_timings, dict) else None,
+            dict(function_metrics) if isinstance(function_metrics, dict) else None,
+        )
+    return None, None, None, None
+
+
+def _as_float(value) -> float | None:
+    try:
+        return float(value) if value is not None else None
+    except (TypeError, ValueError):
+        return None
