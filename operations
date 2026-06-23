@@ -2,7 +2,13 @@ cd /home/qian/Code/FaasANNS
 source .venv/bin/activate
 python src/main.py --config configs/server.aliyun.json
 
+source .venv/bin/activate
+cd functions/ann_candidate_search
+python3 app.py gist
+
 cd /home/qian/Code/FaasANNS/scripts/
 ./run_queries.sh  --dataset gist
+
+./run_queries_2FC.sh  --dataset gist
 
 ./scripts/build_fc_package.sh

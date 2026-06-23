@@ -13,6 +13,7 @@ import numpy as np
 
 ROOT = Path(__file__).resolve().parent.parent
 INDEX_LOADER = ROOT / "baseline" / "functions" / "Two_stage_search" / "src" / "index_loader.py"
+APP = ROOT / "baseline" / "functions" / "Two_stage_search" / "src" / "app.py"
 
 
 def test_two_stage_search_reranks_pq_candidates(tmp_path, monkeypatch) -> None:
@@ -50,6 +51,60 @@ def test_two_stage_search_reranks_pq_candidates(tmp_path, monkeypatch) -> None:
     assert isinstance(status["index_loaded_at"], float)
 
 
+def test_two_stage_nomemory_rerank_reads_only_candidates(tmp_path, monkeypatch) -> None:
+    index_path = tmp_path / "faiss_hnswpq.index"
+    base_path = tmp_path / "vectors_base.fvecs"
+    index_path.write_bytes(b"fake")
+    vectors = np.array(
+        [
+            [0.0, 0.0],
+            [2.0, 0.0],
+            [0.0, 3.0],
+            [10.0, 10.0],
+        ],
+        dtype=np.float32,
+    )
+    _write_fvecs(base_path, vectors)
+    _install_fake_faiss(
+        monkeypatch,
+        vector_count=len(vectors),
+        dimension=vectors.shape[1],
+        candidate_ids=[2, 1, 0],
+    )
+
+    monkeypatch.setenv("FAASANN_PQ_INDEX_PATH", str(index_path))
+    monkeypatch.setenv("FAASANN_BASE_PATH", str(base_path))
+    monkeypatch.setenv("FAASANN_NOMEMORY", "1")
+    module = _load_index_loader()
+
+    results, timings = module.search_with_timings(
+        query=[1.0, 0.0],
+        k=2,
+        candidate_k=3,
+        ef_search=10,
+        nomemory=True,
+    )
+
+    assert [item["id"] for item in results] == [1, 0]
+    assert [item["score"] for item in results] == [1.0, 1.0]
+    assert "direct_fvecs_gather" in timings
+    assert "memmap_gather" not in timings
+    assert module.index_status()["vector_memmap_loaded"] is False
+
+
+def test_two_stage_app_accepts_dataset_and_nomemory(monkeypatch) -> None:
+    _install_fake_handler_modules(monkeypatch)
+    monkeypatch.setattr(sys, "argv", ["app.py"])
+    module = _load_module(APP)
+
+    dataset, nomemory = module._configure_runtime_from_argv(["app.py", "gist", "nomemory"])
+
+    assert dataset == "gist"
+    assert nomemory is True
+    assert module.os.environ["FAASANN_DATASET"] == "gist"
+    assert module.os.environ["FAASANN_NOMEMORY"] == "1"
+
+
 def _write_fvecs(path: Path, vectors: np.ndarray) -> None:
     dimension = vectors.shape[1]
     with path.open("wb") as fp:
@@ -81,10 +136,21 @@ def _install_fake_faiss(monkeypatch, vector_count: int, dimension: int, candidat
 
 
 def _load_index_loader():
+    return _load_module(INDEX_LOADER)
+
+
+def _load_module(path: Path):
     name = f"baseline_two_stage_index_loader_{uuid.uuid4().hex}"
-    spec = importlib.util.spec_from_file_location(name, INDEX_LOADER)
+    spec = importlib.util.spec_from_file_location(name, path)
     module = importlib.util.module_from_spec(spec)
     sys.modules[name] = module
     assert spec.loader is not None
     spec.loader.exec_module(module)
     return module
+
+
+def _install_fake_handler_modules(monkeypatch) -> None:
+    fake_handler = types.SimpleNamespace(handler=lambda payload: payload)
+    fake_index_loader = types.SimpleNamespace(index_status=lambda: {}, warmup=lambda: None)
+    monkeypatch.setitem(sys.modules, "handler", fake_handler)
+    monkeypatch.setitem(sys.modules, "index_loader", fake_index_loader)

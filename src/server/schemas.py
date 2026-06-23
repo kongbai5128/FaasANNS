@@ -17,3 +17,10 @@ class SearchRequest(BaseModel):
     candidate_k: int | None = Field(default=None, gt=0)
     ef_search: int | None = Field(default=None, gt=0)
     use_faas: bool | None = None
+
+
+class RerankRequest(BaseModel):
+    request_id: str | None = None
+    vector: list[float]
+    candidates: list[dict]
+    k: int = Field(gt=0)

@@ -160,7 +160,7 @@ def summarize_run(
 ) -> dict:
     query_count = len(responses)
 
-    avg_client_ms = sum(item["client_elapsed_s"] for item in responses) * 1000.0 / query_count if query_count else 0.0
+    avg_entry_request_ms = sum(item["client_elapsed_s"] for item in responses) * 1000.0 / query_count if query_count else 0.0
     function_timings = [item.get("timings_ms", {}) for item in responses]
     cold_start_load_ms = cold_start_load_times(responses, batch_start_wall_time)
     avg_cold_start_load_ms = sum(cold_start_load_ms.values()) / len(cold_start_load_ms) if cold_start_load_ms else 0.0
@@ -182,13 +182,14 @@ def summarize_run(
         "ef_search": args.ef_search,
         "cold_start_num": len(cold_start_load_ms),
         "avg_cold_start_load_ms": round(avg_cold_start_load_ms, 3),
-        "avg_client_ms": round(avg_client_ms, 3),
+        "avg_entry_request_ms": round(avg_entry_request_ms, 3),
+        "avg_function_request_ms": round(avg_entry_request_ms, 3),
         "avg_function_handler_ms": round(avg_function_timing("handler_total"), 3),
-        "avg_function_search_ms": round(avg_function_timing("search_total"), 3),
-        "avg_function_load_state_ms": round(avg_function_timing("load_state"), 3),
-        "avg_function_index_load_ms": round(avg_function_timing("index_load"), 3),
-        "avg_function_hnsw_query_ms": round(avg_function_timing("hnsw_knn_query"), 3),
-        "avg_function_format_ms": round(avg_function_timing("format_candidates"), 3),
+        "avg_function_ann_search_ms": round(avg_function_timing("hnsw_knn_query"), 3),
+        "avg_function_rerank_ms": 0.0,
+        "avg_server_total_ms": 0.0,
+        "avg_server_candidate_stage_ms": 0.0,
+        "avg_server_rerank_ms": 0.0,
     }
 
 

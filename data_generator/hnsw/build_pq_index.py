@@ -20,7 +20,7 @@ python data_generator/hnsw/build_pq_index.py \
 python data_generator/hnsw/build_pq_index.py \
   --src data/gist/gist_base.fvecs \
   --dst data/gist/index/full/pq \
-  --subspaces 120 \
+  --subspaces 64 \
   --codebook-size 256 \
   --train-size 1000000 \
   --iterations 50 \

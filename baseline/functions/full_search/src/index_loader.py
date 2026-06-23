@@ -31,6 +31,8 @@ _state: "State | None" = None
 
 @dataclass(slots=True)
 class State:
+    """热实例中缓存的 hnswlib 索引状态。"""
+
     index: hnswlib.Index
     index_path: Path
     dimension: int
@@ -43,10 +45,14 @@ class State:
 
 
 def warmup() -> None:
+    """在服务监听前加载索引，避免首个查询承担加载成本。"""
+
     load_state()
 
 
 def index_status() -> dict:
+    """返回可 JSON 序列化的索引加载状态和实例指标。"""
+
     state = _state
     return {
         "loaded": state is not None,
@@ -63,11 +69,15 @@ def index_status() -> dict:
 
 
 def search(query: list[float], candidate_k: int, ef_search: int | None = None) -> list[dict]:
+    """执行一次 HNSW 查询，只返回候选结果，不暴露内部计时。"""
+
     candidates, _ = search_with_timings(query=query, candidate_k=candidate_k, ef_search=ef_search)
     return candidates
 
 
 def search_with_timings(query: list[float], candidate_k: int, ef_search: int | None = None) -> tuple[list[dict], dict[str, float]]:
+    """执行一次 full HNSW 查询，并返回函数内部各阶段耗时。"""
+
     total_start = time.perf_counter()
     state, timings = load_state_with_timings()
     parse_start = time.perf_counter()
@@ -98,31 +108,16 @@ def search_with_timings(query: list[float], candidate_k: int, ef_search: int | N
     return candidates, timings
 
 
-def _search_without_extra_timings(query: list[float], candidate_k: int, ef_search: int | None = None) -> list[dict]:
-    state = load_state()
-    query_vector = np.asarray(query, dtype="float32")
-    if query_vector.shape != (state.dimension,):
-        raise ValueError(f"query dimension must be {state.dimension}, got {query_vector.shape}")
-    if candidate_k <= 0:
-        raise ValueError("candidate_k must be positive")
-
-    if ef_search is not None and ef_search > 0:
-        state.index.set_ef(ef_search)
-    k = min(candidate_k, state.vector_count)
-    ids, distances = state.index.knn_query(query_vector.reshape(1, -1), k=k)
-    return [
-        {"id": int(vector_id), "approx_score": float(score)}
-        for vector_id, score in zip(ids[0], distances[0])
-        if vector_id >= 0
-    ]
-
-
 def load_state() -> State:
+    """返回已加载的索引状态；必要时触发一次加载。"""
+
     state, _ = load_state_with_timings()
     return state
 
 
 def load_state_with_timings() -> tuple[State, dict[str, float]]:
+    """线程安全地加载或复用索引，并记录加载等待和加载耗时。"""
+
     global _state
     total_start = time.perf_counter()
     timings: dict[str, float] = {
@@ -146,6 +141,8 @@ def load_state_with_timings() -> tuple[State, dict[str, float]]:
 
 
 def _load_hnsw_index(index_path: Path) -> State:
+    """从磁盘读取 hnswlib 索引及其元数据。"""
+
     load_start = time.perf_counter()
     if not index_path.exists():
         raise FileNotFoundError(f"hnswlib index file not found: {index_path}")
@@ -172,6 +169,8 @@ def _load_hnsw_index(index_path: Path) -> State:
 
 
 def _load_meta(index_path: Path) -> dict:
+    """读取并校验 hnswlib 索引旁边的 meta JSON。"""
+
     meta_path = index_path.with_suffix(".meta.json")
     if not meta_path.exists():
         raise FileNotFoundError(f"hnswlib metadata file not found: {meta_path}")
@@ -185,4 +184,6 @@ def _load_meta(index_path: Path) -> dict:
 
 
 def _elapsed_ms(start: float) -> float:
+    """返回从 start 到当前时刻的毫秒数。"""
+
     return round((time.perf_counter() - start) * 1000.0, 3)

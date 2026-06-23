@@ -7,11 +7,12 @@
 from __future__ import annotations
 
 import numpy as np
+import time
 from fastapi import APIRouter, HTTPException
 from urllib.error import HTTPError, URLError
 
 from search.service import SearchService
-from server.schemas import SearchRequest
+from server.schemas import RerankRequest, SearchRequest
 from vectors.vector_store import VectorStore
 
 
@@ -48,6 +49,31 @@ def create_router(search_service: SearchService, vector_store: VectorStore) -> A
         except (HTTPError, RuntimeError, URLError, TimeoutError) as exc:
             raise HTTPException(status_code=502, detail=f"faas invoke failed: {exc}") from exc
         return result.to_json()
+
+    @router.post("/rerank")
+    async def rerank(request: RerankRequest) -> dict:
+        total_start = time.perf_counter()
+        query = np.asarray(request.vector, dtype="float32")
+        if query.shape != (vector_store.dimension,):
+            raise HTTPException(status_code=400, detail=f"vector dimension must be {vector_store.dimension}")
+        try:
+            rerank_start = time.perf_counter()
+            results = await search_service.rerank(query, request.candidates, request.k)
+        except (KeyError, TypeError, ValueError) as exc:
+            raise HTTPException(status_code=400, detail=f"invalid rerank request: {exc}") from exc
+        rerank_ms = round((time.perf_counter() - rerank_start) * 1000.0, 3)
+        return {
+            "request_id": request.request_id,
+            "results": [{"id": item.id, "score": item.score} for item in results],
+            "timings_ms": {
+                "rerank": rerank_ms,
+                "total": round((time.perf_counter() - total_start) * 1000.0, 3),
+            },
+            "rerank_metrics": {
+                "candidate_count": len(request.candidates),
+                "result_count": len(results),
+            },
+        }
 
     return router
 

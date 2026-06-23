@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+DATASET="sift100w"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "${SCRIPT_DIR}/../../../.." && pwd)"
 PYTHON="${PROJECT_ROOT}/.venv/bin/python"
@@ -13,21 +14,8 @@ fi
 cd "${PROJECT_ROOT}"
 export no_proxy="*"
 export NO_PROXY="*"
-DATASET="${FAASANN_DATASET:-sift100w}"
+
 # sift100w 0.99
-exec "${PYTHON}" baseline/functions/full_search/test/run_queries.py \
-  --endpoint "${ENDPOINT}" \
-  --dataset "${DATASET}" \
-  --query-num 1000 \
-  --concurrent-requests 1 \
-  --k 10 \
-  --candidate-k 10 \
-  --ef-search 99 \
-  --log-file "baseline/functions/full_search/test/run_local_queries_${DATASET}.log" \
-  "$@"
-
-
-# gist 0.99
 # exec "${PYTHON}" baseline/functions/full_search/test/run_queries.py \
 #   --endpoint "${ENDPOINT}" \
 #   --dataset "${DATASET}" \
@@ -35,6 +23,19 @@ exec "${PYTHON}" baseline/functions/full_search/test/run_queries.py \
 #   --concurrent-requests 1 \
 #   --k 10 \
 #   --candidate-k 10 \
-#   --ef-search 250 \
+#   --ef-search 99 \
 #   --log-file "baseline/functions/full_search/test/result/run_local_queries_${DATASET}.csv" \
 #   "$@"
+
+
+# gist 0.99
+exec "${PYTHON}" baseline/functions/full_search/test/run_queries.py \
+  --endpoint "${ENDPOINT}" \
+  --dataset "${DATASET}" \
+  --query-num 1000 \
+  --concurrent-requests 1 \
+  --k 10 \
+  --candidate-k 10 \
+  --ef-search 100 \
+  --log-file "baseline/functions/full_search/test/result/run_local_queries_${DATASET}.csv" \
+  "$@"

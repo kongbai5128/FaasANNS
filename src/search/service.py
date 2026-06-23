@@ -183,6 +183,9 @@ class SearchService:
         )
 
     async def _rerank(self, query: np.ndarray, candidates: list[dict], k: int) -> list[ScoredVector]:
+        return await self.rerank(query, candidates, k)
+
+    async def rerank(self, query: np.ndarray, candidates: list[dict], k: int) -> list[ScoredVector]:
         loop = asyncio.get_running_loop()
         return await loop.run_in_executor(
             self.rerank_executor,

@@ -4,13 +4,19 @@
 from __future__ import annotations
 
 import json
+import os
 import time
 from typing import Any
 
 from index_loader import index_status, search_with_timings, warmup
 
 
+DEFAULT_NOMEMORY = os.environ.get("FAASANN_NOMEMORY", "").strip().lower() in {"1", "true", "yes", "on", "nomemory"}
+
+
 def handler(event: bytes | str | dict, context: Any = None) -> dict | list[bytes]:
+    """统一入口：兼容 FC 事件调用和本地 WSGI/HTTP 调用。"""
+
     if _is_wsgi_request(event, context):
         return _handle_wsgi_request(event, context)
 
@@ -19,10 +25,14 @@ def handler(event: bytes | str | dict, context: Any = None) -> dict | list[bytes
 
 
 def _is_wsgi_request(event: Any, context: Any) -> bool:
+    """判断当前调用是否来自 FC Web 函数的 WSGI 适配层。"""
+
     return isinstance(event, dict) and callable(context) and "wsgi.input" in event
 
 
 def _handle_wsgi_request(environ: dict, start_response: Any) -> list[bytes]:
+    """把 WSGI 请求体解析成普通 payload，再交给核心 handler。"""
+
     content_length = int(environ.get("CONTENT_LENGTH") or 0)
     body = environ["wsgi.input"].read(content_length) if content_length > 0 else b"{}"
     payload = _decode_payload(body)
@@ -33,6 +43,8 @@ def _handle_wsgi_request(environ: dict, start_response: Any) -> list[bytes]:
 
 
 def _decode_payload(event: bytes | str | dict) -> dict:
+    """把 bytes/string/dict 三种 FC 输入统一成 dict。"""
+
     if isinstance(event, bytes):
         return json.loads(event.decode("utf-8"))
     if isinstance(event, str):
@@ -41,6 +53,8 @@ def _decode_payload(event: bytes | str | dict) -> dict:
 
 
 def _handle_payload(payload: dict) -> dict:
+    """处理 status、warmup 和两阶段搜索请求。"""
+
     handler_start = time.perf_counter()
     if payload.get("type") == "status":
         return {"status": "ok", "index": index_status()}
@@ -54,11 +68,13 @@ def _handle_payload(payload: dict) -> dict:
             "timings_ms": {"warmup_total": _elapsed_ms(warmup_start), "handler_total": _elapsed_ms(handler_start)},
         }
 
+    nomemory = _payload_nomemory(payload)
     candidates, timings = search_with_timings(
         query=payload["query"],
         k=int(payload["k"]),
         candidate_k=int(payload["candidate_k"]),
         ef_search=int(payload.get("ef_search") or 0),
+        nomemory=nomemory,
     )
     status = index_status()
     timings["handler_total"] = _elapsed_ms(handler_start)
@@ -70,12 +86,28 @@ def _handle_payload(payload: dict) -> dict:
         "timings_ms": timings,
         "function_metrics": {
             "candidate_count": len(candidates),
+            "nomemory": nomemory,
             "index_file_size_bytes": status.get("index_file_size_bytes"),
             "base_file_size_bytes": status.get("base_file_size_bytes"),
             "index_load_ms": status.get("index_load_ms"),
+            "vector_memmap_loaded": status.get("vector_memmap_loaded"),
+            "vector_memmap_load_ms": status.get("vector_memmap_load_ms"),
         },
     }
 
 
+def _payload_nomemory(payload: dict) -> bool:
+    """解析请求级 nomemory；未提供时使用实例启动级默认值。"""
+
+    if "nomemory" not in payload:
+        return DEFAULT_NOMEMORY
+    value = payload["nomemory"]
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "on", "nomemory"}
+    return bool(value)
+
+
 def _elapsed_ms(start: float) -> float:
+    """返回从 start 到当前时刻的毫秒数。"""
+
     return round((time.perf_counter() - start) * 1000.0, 3)

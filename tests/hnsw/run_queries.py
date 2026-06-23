@@ -3,6 +3,10 @@
 这个脚本参考旧项目 /home/qian/faasann/test/hnsw/run.py 的实验方式：
 读取查询向量和 groundtruth，按并发度向当前服务器的 `/search` 接口发送请求，
 统计客户端 QPS、Recall@K、local/FaaS 路径数量和阶段耗时，并把最终汇总结果写入 CSV。
+
+./run_queries.sh  --dataset gist
+
+./run_queries_2FC.sh  --dataset gist
 """
 
 from __future__ import annotations
@@ -68,6 +72,9 @@ def post_json(url: str, payload: dict, timeout: float) -> dict:
 
 def send_one_query(
     server_url: str,
+    function_url: str | None,
+    rerank_server_url: str | None,
+    entrypoint: str,
     query_id: int,
     vector: list[float] | None,
     k: int,
@@ -90,9 +97,25 @@ def send_one_query(
         payload["ef_search"] = ef_search
     if use_faas is not None:
         payload["use_faas"] = use_faas
+    if entrypoint == "function":
+        if vector is None:
+            raise RuntimeError("--entrypoint function requires --send-vectors")
+        if candidate_k is None:
+            raise RuntimeError("--entrypoint function requires --candidate-k")
+        if ef_search is None:
+            raise RuntimeError("--entrypoint function requires --ef-search")
+        if not function_url:
+            raise RuntimeError("--entrypoint function requires --function-url")
+        if not rerank_server_url:
+            raise RuntimeError("--entrypoint function requires --rerank-server-url")
+        payload["query"] = payload.pop("vector")
+        payload["rerank_server_url"] = rerank_server_url.rstrip("/")
+        url = function_url.rstrip("/")
+    else:
+        url = f"{server_url.rstrip('/')}/search"
 
     start = time.perf_counter()
-    response = post_json(f"{server_url.rstrip('/')}/search", payload, timeout)
+    response = post_json(url, payload, timeout)
     response["client_elapsed_s"] = time.perf_counter() - start
     return response
 
@@ -107,6 +130,9 @@ def calculate_recall(result_ids: list[int], truth_ids: list[int], k: int) -> flo
 
 def run_queries(
     server_url: str,
+    function_url: str | None,
+    rerank_server_url: str | None,
+    entrypoint: str,
     query_vectors,
     groundtruth,
     count: int,
@@ -125,6 +151,9 @@ def run_queries(
         try:
             response = send_one_query(
                 server_url=server_url,
+                function_url=function_url,
+                rerank_server_url=rerank_server_url,
+                entrypoint=entrypoint,
                 query_id=query_id,
                 vector=vector,
                 k=k,
@@ -180,6 +209,8 @@ def summarize_run(
     responses: list[dict],
     elapsed: float,
     k: int,
+    candidate_k: int | None,
+    ef_search: int | None,
     concurrent_requests: int,
     dataset: str,
     batch_start_wall_time: float,
@@ -187,9 +218,17 @@ def summarize_run(
     query_count = len(responses)
     timings = [item.get("timings_ms", {}) for item in responses]
     function_timings = [item.get("function_timings_ms", {}) for item in responses]
+    server_timings = [item.get("server_timings_ms", {}) for item in responses]
     plans = [item.get("plan", {}) for item in responses]
     cold_start_load_ms = cold_start_load_times(responses, batch_start_wall_time)
     avg_cold_start_load_ms = sum(cold_start_load_ms.values()) / len(cold_start_load_ms) if cold_start_load_ms else 0.0
+    error_count = sum(1 for item in responses if "error" in item)
+    success_count = query_count - error_count
+    avg_entry_request_ms = (
+        sum(item.get("client_elapsed_s", 0.0) for item in responses if "error" not in item) * 1000.0 / success_count
+        if success_count
+        else 0.0
+    )
 
     def avg_timing(name: str) -> float:
         return _avg_metric(timings, name)
@@ -197,9 +236,16 @@ def summarize_run(
     def avg_function_timing(name: str) -> float:
         return _avg_metric(function_timings, name)
 
-    error_count = sum(1 for item in responses if "error" in item)
-    success_count = query_count - error_count
+    def avg_server_timing(name: str) -> float:
+        return _avg_metric(server_timings, name)
+
     recall = sum(item.get("recall", 0.0) for item in responses if "error" not in item) / success_count if success_count else 0.0
+    entrypoint = _response_entrypoint(plans)
+    function_request_ms = avg_entry_request_ms if entrypoint == "function" else avg_timing("remote_invoke")
+    function_ann_search_ms = avg_function_timing("faiss_search") or avg_function_timing("ann_search_and_format")
+    server_total_ms = avg_server_timing("total") if entrypoint == "function" else avg_timing("total")
+    server_candidate_stage_ms = 0.0 if entrypoint == "function" else avg_timing("candidates")
+    server_rerank_ms = avg_server_timing("rerank") if entrypoint == "function" else avg_timing("rerank")
     return {
         "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
         "dataset": dataset,
@@ -211,21 +257,22 @@ def summarize_run(
         "qps_client": round(query_count / elapsed, 2) if elapsed > 0 else 0.0,
         "recall": round(recall, 6),
         "k": k,
+        "candidate_k": candidate_k,
+        "ef_search": ef_search,
+        "entrypoint": entrypoint,
         "local_count": sum(1 for plan in plans if plan.get("mode") == "local"),
         "faas_count": sum(1 for plan in plans if plan.get("mode") == "faas"),
+        "function_entry_count": sum(1 for plan in plans if plan.get("mode") == "function_entry"),
         "cold_start_num": len(cold_start_load_ms),
         "avg_cold_start_load_ms": round(avg_cold_start_load_ms, 3),
-        "avg_total_ms": round(avg_timing("total"), 3),
-        "avg_candidates_ms": round(avg_timing("candidates"), 3),
-        "avg_rerank_ms": round(avg_timing("rerank"), 3),
-        "avg_remote_invoke_ms": round(avg_timing("remote_invoke"), 3),
+        "avg_entry_request_ms": round(avg_entry_request_ms, 3),
+        "avg_function_request_ms": round(function_request_ms, 3),
         "avg_function_handler_ms": round(avg_function_timing("handler_total"), 3),
-        "avg_function_search_ms": round(avg_function_timing("search_total"), 3),
-        "avg_function_load_state_ms": round(avg_function_timing("load_state"), 3),
-        "avg_function_index_load_ms": round(avg_function_timing("index_load"), 3),
-        "avg_function_faiss_search_ms": round(avg_function_timing("faiss_search"), 3),
-        "avg_function_format_ms": round(avg_function_timing("format_candidates"), 3),
-        "avg_remote_queue_estimate_ms": round(avg_function_timing("remote_queue_estimate"), 3),
+        "avg_function_ann_search_ms": round(function_ann_search_ms, 3),
+        "avg_function_rerank_ms": 0.0,
+        "avg_server_total_ms": round(server_total_ms, 3),
+        "avg_server_candidate_stage_ms": round(server_candidate_stage_ms, 3),
+        "avg_server_rerank_ms": round(server_rerank_ms, 3),
     }
 
 
@@ -246,6 +293,12 @@ def _as_float(value) -> float | None:
         return float(value) if value is not None else None
     except (TypeError, ValueError):
         return None
+
+
+def _response_entrypoint(plans: list[dict]) -> str:
+    if any(plan.get("mode") == "function_entry" for plan in plans):
+        return "function"
+    return "server"
 
 
 def write_rows(path: Path, rows: list[dict]) -> None:
@@ -273,7 +326,10 @@ def _existing_header(path: Path) -> list[str] | None:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Send dataset queries to FaasANN /search and calculate recall")
+    parser.add_argument("--entrypoint", choices=["server", "function"], default="server")
     parser.add_argument("--server-url", default="http://127.0.0.1:8080")
+    parser.add_argument("--function-url", default=None)
+    parser.add_argument("--rerank-server-url", default=None)
     parser.add_argument("--dataset", default=os.environ.get("FAASANN_DATASET", DEFAULT_DATASET))
     parser.add_argument("--query-file", default=None)
     parser.add_argument("--groundtruth-file", default=None)
@@ -308,6 +364,11 @@ def parse_args() -> argparse.Namespace:
         args.groundtruth_file = default_groundtruth_file(args.dataset)
     if args.log_file is None:
         args.log_file = f"logs/run_queries_{args.dataset}.csv"
+    if args.entrypoint == "function":
+        if args.function_url is None:
+            raise SystemExit("--entrypoint function requires --function-url")
+        if args.rerank_server_url is None:
+            args.rerank_server_url = args.server_url
     return args
 
 
@@ -317,7 +378,11 @@ def main() -> None:
     groundtruth_file = ROOT / args.groundtruth_file
     log_file = ROOT / args.log_file
 
+    print(f"Entrypoint: {args.entrypoint}")
     print(f"Server URL: {args.server_url}")
+    if args.entrypoint == "function":
+        print(f"Function URL: {args.function_url}")
+        print(f"Rerank server URL: {args.rerank_server_url}")
     print(f"Dataset: {args.dataset}")
     print(f"Query file: {query_file}")
     print(f"Groundtruth file: {groundtruth_file}")
@@ -342,6 +407,9 @@ def main() -> None:
     try:
         responses = run_queries(
             server_url=args.server_url,
+            function_url=args.function_url,
+            rerank_server_url=args.rerank_server_url,
+            entrypoint=args.entrypoint,
             query_vectors=queries,
             groundtruth=groundtruth,
             count=len(queries),
@@ -358,7 +426,16 @@ def main() -> None:
         raise SystemExit(f"Run failed: {exc}") from exc
 
     elapsed = time.perf_counter() - start_t
-    summary = summarize_run(responses, elapsed, args.k, args.concurrent_requests, args.dataset, batch_start_wall_time)
+    summary = summarize_run(
+        responses,
+        elapsed,
+        args.k,
+        args.candidate_k,
+        args.ef_search,
+        args.concurrent_requests,
+        args.dataset,
+        batch_start_wall_time,
+    )
     write_rows(log_file, [summary])
     print(
         f"Finished: queries={summary['query_count']}, "
@@ -368,6 +445,7 @@ def main() -> None:
         f"qps={summary['qps_client']:.2f}, "
         f"average_recall@{args.k}={summary['recall']:.4f}, "
         f"local={summary['local_count']}, faas={summary['faas_count']}, "
+        f"function_entry={summary['function_entry_count']}, "
         f"cold_start_num={summary['cold_start_num']}"
     )
     errors = [item for item in responses if "error" in item]
