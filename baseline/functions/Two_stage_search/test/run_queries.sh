@@ -5,8 +5,8 @@ DATASET="gist"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "${SCRIPT_DIR}/../../../.." && pwd)"
 PYTHON="${PROJECT_ROOT}/.venv/bin/python"
-ENDPOINT="http://127.0.0.1:9000"
-# ENDPOINT="https://base-lie-search-aobkfnfjxd.cn-hongkong.fcapp.run"
+# ENDPOINT="http://127.0.0.1:9000"
+ENDPOINT="https://base-lie-search-aobkfnfjxd.cn-hongkong.fcapp.run"
 
 if [[ ! -x "${PYTHON}" ]]; then
   PYTHON="python3"

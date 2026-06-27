@@ -1,6 +1,6 @@
 source .venv/bin/activate
 cd /home/qian/Code/FaasANNS/baseline/functions/full_search/src
-python3 app.py sift100w
+python3 app.py gist
 
 
 ./baseline/functions/full_search/test/run_queries.sh

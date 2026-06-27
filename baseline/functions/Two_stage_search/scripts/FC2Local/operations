@@ -1,6 +1,6 @@
 source .venv/bin/activate
 cd /home/qian/Code/FaasANNS/baseline/functions/Two_stage_search/src
-python3 app.py gist nomemory
+python3 app.py gist
 
 
 ./baseline/functions/Two_stage_search/test/run_queries.sh

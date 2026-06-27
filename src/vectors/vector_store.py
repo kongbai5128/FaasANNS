@@ -63,5 +63,5 @@ class VectorStore:
 
         ids = np.array(list(seen.keys()), dtype=np.int64)
         scores = self.l2_scores(query.astype("float32", copy=False), ids)
-        order = np.argsort(scores)[:k]
+        order = np.argsort(scores)[:k]# 返回排好序的前 k 个下标
         return [ScoredVector(id=int(ids[i]), score=float(scores[i])) for i in order]

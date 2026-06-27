@@ -5,15 +5,15 @@
     "log_level": "info"
   },
   "dataset": {
-    "base_path": "data/gist/gist_base.fvecs",
-    "dimension": 960,
+    "base_path": "data/sift100w/sift_base.fvecs",
+    "dimension": 128,
     "max_vectors": 1000000
   },
   "search": {
     "hnsw": {
       "default_k": 10,
       "candidate_k": 500,
-      "hnsw_index_path": "data/gist/index/full/full_hnsw.bin",
+      "hnsw_index_path": "data/sift100w/index/full/full_hnsw.bin",
       "hnsw_m": 32,
       "hnsw_ef_construction": 200,
       "hnsw_ef_search": 500
@@ -42,7 +42,7 @@
     "invoke_timeout_seconds": 600.0,
     "warmup_timeout_seconds": 600.0,
     "endpoints": {
-      "default": "https://vector-search-qpvucermgx.cn-hongkong.fcapp.run"
+      "default": "http://127.0.0.1:9000"
     }
   }
 }
