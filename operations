@@ -12,3 +12,5 @@ python3 app.py gist
 
 
 ./scripts/build_fc_package.sh
+
+lsof -i :8080

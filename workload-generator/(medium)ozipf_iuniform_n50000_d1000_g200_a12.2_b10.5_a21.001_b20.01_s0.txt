@@ -1,0 +1,56 @@
+cd /home/qian/Code/FaasANNS/workload-generator
+
+python ./main.py \
+  -o zipf \
+  -i uniform \
+  -n 15000 \
+  -d 300 \
+  -g 200 \
+  -a1 2.2 \
+  -b1 0.5 \
+  -a2 1.001 \
+  -b2 0.01 \
+  -f plan.bin
+
+逐项解释：
+-o zipf：外层分布用 Zipf。
+外层分布决定 每个时间桶里分到多少请求。Zipf 会让某些桶请求更多，形成 burst。
+
+-i uniform：内层分布用 uniform。
+内层分布决定 同一个时间桶内部，请求具体落在哪些时间点。
+
+-n 50000：总请求数是 50000。
+
+-d 1000：总持续时间是 1000 秒。
+
+-g 200：granularity，切成 200 个时间桶。
+所以每个桶长度是 1000 / 200 = 5 秒。
+
+-a1 2.2：外层 Zipf 的 skewness 参数。
+越接近 1 越偏斜，burst 越强；越大越接近均匀。2.2 是中等偏斜。
+
+-b1 0.5：外层平滑/混合参数。
+在代码里它会把 Zipf 桶权重和一部分均值/随机扰动混合。0.5 会削弱纯 Zipf 的尖峰，让 burst 程度更“medium”。
+
+-a2 1.001：内层分布参数。
+但这里 -i uniform 时，a2 基本不会真正影响 uniform 分布；如果内层是 Zipf，a2 才主要控制桶内请求时间的偏斜程度。
+
+-b2 0.01：内层采样/扰动参数。
+在每个桶内部，代码大致保留 1 - b2 = 99% 的主分布样本，另外 1% 用线性分布加一点扰动补充。
+
+-f plan.bin：把生成出来的计划保存到 plan.bin。
+后续压测脚本会读取这个文件，按里面的时间戳发送请求。
+
+注意：没有指定 -m，所以使用默认模式 get_distribution，也就是只生成并保存 workload plan，不直接执行 workload。
+
+
+
+
+MPLBACKEND=Agg 让 matplotlib 不弹窗，只生成/保存图片。env -u TERM_PROGRAM 临时移除 TERM_PROGRAM 环境变量，避免vis_plan.py 进入交互模式。
+MPLBACKEND=Agg env -u TERM_PROGRAM /home/qian/Code/FaasANNS/.venv/bin/python ./vis_plan.py
+
+
+现在要跑压测的话，直接用当前这个 plan.bin：
+cd /home/qian/Code/FaasANNS/workload-generator
+/home/qian/Code/FaasANNS/.venv/bin/python ./run_azure_workload.py
+它会读取刚生成的 plan.bin，按这个 medium bursty 时间分布向 Vexless 发送 50000 次 query。

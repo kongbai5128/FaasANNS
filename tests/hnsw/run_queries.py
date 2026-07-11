@@ -6,7 +6,6 @@
 
 ./run_queries.sh  --dataset gist
 
-./run_queries_2FC.sh  --dataset gist
 """
 
 from __future__ import annotations
@@ -17,16 +16,18 @@ import json
 import os
 import sys
 import time
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import Future, ThreadPoolExecutor, as_completed
 from pathlib import Path
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "src"))
+sys.path.insert(0, str(ROOT / "workload-generator"))
 
 from vectors.fvecs import read_fvecs
 from vectors.ivecs import read_ivecs
+from workload_plan import QueryProgress, describe_workload_plan, load_workload_plan, resolve_request_count, submit_with_plan
 
 
 DEFAULT_DATASET = "sift100w"
@@ -72,10 +73,8 @@ def post_json(url: str, payload: dict, timeout: float) -> dict:
 
 def send_one_query(
     server_url: str,
-    function_url: str | None,
-    rerank_server_url: str | None,
-    entrypoint: str,
     query_id: int,
+    request_id: str,
     vector: list[float] | None,
     k: int,
     candidate_k: int | None,
@@ -84,7 +83,7 @@ def send_one_query(
     timeout: float,
 ) -> dict:
     payload: dict = {
-        "request_id": f"query-{query_id}",
+        "request_id": request_id,
         "k": k,
     }
     if vector is None:
@@ -97,22 +96,7 @@ def send_one_query(
         payload["ef_search"] = ef_search
     if use_faas is not None:
         payload["use_faas"] = use_faas
-    if entrypoint == "function":
-        if vector is None:
-            raise RuntimeError("--entrypoint function requires --send-vectors")
-        if candidate_k is None:
-            raise RuntimeError("--entrypoint function requires --candidate-k")
-        if ef_search is None:
-            raise RuntimeError("--entrypoint function requires --ef-search")
-        if not function_url:
-            raise RuntimeError("--entrypoint function requires --function-url")
-        if not rerank_server_url:
-            raise RuntimeError("--entrypoint function requires --rerank-server-url")
-        payload["query"] = payload.pop("vector")
-        payload["rerank_server_url"] = rerank_server_url.rstrip("/")
-        url = function_url.rstrip("/")
-    else:
-        url = f"{server_url.rstrip('/')}/search"
+    url = f"{server_url.rstrip('/')}/search"
 
     start = time.perf_counter()
     response = post_json(url, payload, timeout)
@@ -130,9 +114,6 @@ def calculate_recall(result_ids: list[int], truth_ids: list[int], k: int) -> flo
 
 def run_queries(
     server_url: str,
-    function_url: str | None,
-    rerank_server_url: str | None,
-    entrypoint: str,
     query_vectors,
     groundtruth,
     count: int,
@@ -144,17 +125,23 @@ def run_queries(
     concurrent_requests: int,
     timeout: float,
     continue_on_error: bool,
-) -> list[dict]:
+    plan,
+    show_progress: bool = True,
+) -> tuple[list[dict], float]:
+    if len(query_vectors) == 0:
+        raise ValueError("no query vectors loaded")
+
+    progress = QueryProgress(count, enabled=show_progress)
+
     def submit(i: int) -> dict:
-        query_id = i
-        vector = query_vectors[query_id].astype("float32").tolist() if send_vectors else None
+        source_query_id = i % len(query_vectors)
+        progress.mark_sent()
+        vector = query_vectors[source_query_id].astype("float32").tolist() if send_vectors else None
         try:
             response = send_one_query(
                 server_url=server_url,
-                function_url=function_url,
-                rerank_server_url=rerank_server_url,
-                entrypoint=entrypoint,
-                query_id=query_id,
+                query_id=source_query_id,
+                request_id=f"query-{i}",
                 vector=vector,
                 k=k,
                 candidate_k=candidate_k,
@@ -166,24 +153,32 @@ def run_queries(
             if not continue_on_error:
                 raise
             return {
-                "query_id": query_id,
+                "query_id": i,
+                "source_query_id": source_query_id,
                 "result_ids": [],
                 "recall": 0.0,
                 "error": str(exc),
                 "client_elapsed_s": 0.0,
             }
         result_ids = [int(item["id"]) for item in response.get("results", [])]
-        response["query_id"] = query_id
+        response["query_id"] = i
+        response["source_query_id"] = source_query_id
         response["result_ids"] = result_ids
-        response["recall"] = calculate_recall(result_ids, groundtruth[query_id].tolist(), k)
+        response["recall"] = calculate_recall(result_ids, groundtruth[source_query_id].tolist(), k)
         return response
 
+    def track_future(future: Future) -> None:
+        future.add_done_callback(lambda _future: progress.mark_received())
+
     results: list[dict] = []
-    with ThreadPoolExecutor(max_workers=concurrent_requests) as executor:
-        futures = [executor.submit(submit, i) for i in range(count)]
-        for future in as_completed(futures):
-            results.append(future.result())
-    return results
+    try:
+        with ThreadPoolExecutor(max_workers=concurrent_requests) as executor:
+            futures, batch_start_wall_time = submit_with_plan(executor, count, submit, plan, on_submit=track_future)
+            for future in as_completed(futures):
+                results.append(future.result())
+    finally:
+        progress.close()
+    return results, batch_start_wall_time
 
 
 def cold_start_load_times(responses: list[dict], batch_start_wall_time: float) -> dict[str, float]:
@@ -229,7 +224,6 @@ def summarize_run(
         if success_count
         else 0.0
     )
-
     def avg_timing(name: str) -> float:
         return _avg_metric(timings, name)
 
@@ -240,12 +234,11 @@ def summarize_run(
         return _avg_metric(server_timings, name)
 
     recall = sum(item.get("recall", 0.0) for item in responses if "error" not in item) / success_count if success_count else 0.0
-    entrypoint = _response_entrypoint(plans)
-    function_request_ms = avg_entry_request_ms if entrypoint == "function" else avg_timing("remote_invoke")
+    function_request_ms = avg_timing("remote_invoke")
     function_ann_search_ms = avg_function_timing("faiss_search") or avg_function_timing("ann_search_and_format")
-    server_total_ms = avg_server_timing("total") if entrypoint == "function" else avg_timing("total")
-    server_candidate_stage_ms = 0.0 if entrypoint == "function" else avg_timing("candidates")
-    server_rerank_ms = avg_server_timing("rerank") if entrypoint == "function" else avg_timing("rerank")
+    server_total_ms = avg_timing("total")
+    server_candidate_stage_ms = avg_timing("candidates")
+    server_rerank_ms = avg_timing("rerank")
     return {
         "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
         "dataset": dataset,
@@ -259,10 +252,9 @@ def summarize_run(
         "k": k,
         "candidate_k": candidate_k,
         "ef_search": ef_search,
-        "entrypoint": entrypoint,
+        "entrypoint": "server",
         "local_count": sum(1 for plan in plans if plan.get("mode") == "local"),
         "faas_count": sum(1 for plan in plans if plan.get("mode") == "faas"),
-        "function_entry_count": sum(1 for plan in plans if plan.get("mode") == "function_entry"),
         "cold_start_num": len(cold_start_load_ms),
         "avg_cold_start_load_ms": round(avg_cold_start_load_ms, 3),
         "avg_entry_request_ms": round(avg_entry_request_ms, 3),
@@ -295,12 +287,6 @@ def _as_float(value) -> float | None:
         return None
 
 
-def _response_entrypoint(plans: list[dict]) -> str:
-    if any(plan.get("mode") == "function_entry" for plan in plans):
-        return "function"
-    return "server"
-
-
 def write_rows(path: Path, rows: list[dict]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     if not rows:
@@ -326,15 +312,17 @@ def _existing_header(path: Path) -> list[str] | None:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Send dataset queries to FaasANN /search and calculate recall")
-    parser.add_argument("--entrypoint", choices=["server", "function"], default="server")
     parser.add_argument("--server-url", default="http://127.0.0.1:8080")
-    parser.add_argument("--function-url", default=None)
-    parser.add_argument("--rerank-server-url", default=None)
     parser.add_argument("--dataset", default=os.environ.get("FAASANN_DATASET", DEFAULT_DATASET))
     parser.add_argument("--query-file", default=None)
     parser.add_argument("--groundtruth-file", default=None)
     parser.add_argument("--query-num", type=int, default=1000)
-    parser.add_argument("--concurrent-requests", type=int, default=20)
+    parser.add_argument(
+        "--concurrent-requests",
+        type=int,
+        default=20,
+        help="maximum client worker threads; in plan mode this is only a capacity cap, not fixed concurrency",
+    )
     parser.add_argument("--k", type=int, default=10)
     parser.add_argument("--candidate-k", type=int, default=None)
     parser.add_argument("--ef-search", type=int, default=None)
@@ -355,6 +343,8 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--timeout", type=float, default=60.0)
     parser.add_argument("--continue-on-error", action="store_true")
+    parser.add_argument("--plan-file", default=None, help="replay query arrivals from workload-generator plan.bin")
+    parser.add_argument("--no-progress", action="store_true", help="disable live sent/received progress output")
     parser.add_argument("--log-file", default=None)
     args = parser.parse_args()
     args.dataset = normalize_dataset(args.dataset)
@@ -364,11 +354,6 @@ def parse_args() -> argparse.Namespace:
         args.groundtruth_file = default_groundtruth_file(args.dataset)
     if args.log_file is None:
         args.log_file = f"logs/run_queries_{args.dataset}.csv"
-    if args.entrypoint == "function":
-        if args.function_url is None:
-            raise SystemExit("--entrypoint function requires --function-url")
-        if args.rerank_server_url is None:
-            args.rerank_server_url = args.server_url
     return args
 
 
@@ -378,19 +363,24 @@ def main() -> None:
     groundtruth_file = ROOT / args.groundtruth_file
     log_file = ROOT / args.log_file
 
-    print(f"Entrypoint: {args.entrypoint}")
+    print("Entrypoint: server")
     print(f"Server URL: {args.server_url}")
-    if args.entrypoint == "function":
-        print(f"Function URL: {args.function_url}")
-        print(f"Rerank server URL: {args.rerank_server_url}")
     print(f"Dataset: {args.dataset}")
     print(f"Query file: {query_file}")
     print(f"Groundtruth file: {groundtruth_file}")
     print(f"Log file: {log_file}")
 
+    plan = load_workload_plan(args.plan_file, root=ROOT) if args.plan_file else None
+    try:
+        request_count = resolve_request_count(args.query_num, plan)
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from exc
+
     print(f"Reading queries from {query_file}")
-    queries = read_fvecs(query_file, max_vectors=args.query_num)
+    queries = read_fvecs(query_file, max_vectors=request_count)
     print(f"Read {len(queries)} query vectors")
+    if len(queries) == 0:
+        raise SystemExit("query file has no vectors")
 
     print(f"Reading groundtruth from {groundtruth_file}")
     groundtruth = read_ivecs(groundtruth_file, max_vectors=len(queries))
@@ -399,20 +389,18 @@ def main() -> None:
         raise SystemExit("groundtruth row count is smaller than query count")
 
     print(
-        f"Sending {len(queries)} queries with concurrency={args.concurrent_requests} "
-        f"(rough per-worker queries={len(queries) / max(1, args.concurrent_requests):.1f})"
+        f"Sending {request_count} requests with client_workers={args.concurrent_requests} "
+        f"(cycling {len(queries)} query vectors, "
+        f"rough per-worker requests={request_count / max(1, args.concurrent_requests):.1f})"
     )
-    batch_start_wall_time = time.time()
+    print(describe_workload_plan(plan, request_count))
     start_t = time.perf_counter()
     try:
-        responses = run_queries(
+        responses, batch_start_wall_time = run_queries(
             server_url=args.server_url,
-            function_url=args.function_url,
-            rerank_server_url=args.rerank_server_url,
-            entrypoint=args.entrypoint,
             query_vectors=queries,
             groundtruth=groundtruth,
-            count=len(queries),
+            count=request_count,
             k=args.k,
             candidate_k=args.candidate_k,
             ef_search=args.ef_search,
@@ -421,6 +409,8 @@ def main() -> None:
             concurrent_requests=args.concurrent_requests,
             timeout=args.timeout,
             continue_on_error=args.continue_on_error,
+            plan=plan,
+            show_progress=not args.no_progress,
         )
     except (HTTPError, URLError, TimeoutError, RuntimeError) as exc:
         raise SystemExit(f"Run failed: {exc}") from exc
@@ -445,7 +435,6 @@ def main() -> None:
         f"qps={summary['qps_client']:.2f}, "
         f"average_recall@{args.k}={summary['recall']:.4f}, "
         f"local={summary['local_count']}, faas={summary['faas_count']}, "
-        f"function_entry={summary['function_entry_count']}, "
         f"cold_start_num={summary['cold_start_num']}"
     )
     errors = [item for item in responses if "error" in item]

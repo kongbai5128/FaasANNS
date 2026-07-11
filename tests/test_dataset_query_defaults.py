@@ -103,33 +103,48 @@ def test_server_runner_summary_uses_clear_timing_names() -> None:
     assert summary["avg_server_rerank_ms"] == 2.0
 
 
-def test_function_entry_summary_uses_clear_timing_names() -> None:
-    module = _load_module(ROOT / "tests" / "hnsw" / "run_queries.py")
+def test_to_fc_runner_defaults_to_gist_files(monkeypatch) -> None:
+    module = _load_module(ROOT / "to_FC" / "test" / "run_queries.py")
+
+    monkeypatch.setenv("FAASANN_DATASET", "gist")
+    monkeypatch.setattr(sys, "argv", ["run_queries.py"])
+    args = module.parse_args()
+
+    assert args.dataset == "gist"
+    assert args.query_file == "data/gist/gist_query.fvecs"
+    assert args.groundtruth_file == "data/gist/gist_groundtruth.ivecs"
+    assert args.log_file == "logs/run_queries_to_FC_gist.csv"
+
+
+def test_to_fc_summary_uses_callback_timing_names() -> None:
+    module = _load_module(ROOT / "to_FC" / "test" / "run_queries.py")
+
+    class Args:
+        dataset = "gist"
+        concurrent_requests = 1
+        k = 10
+        candidate_k = 130
+        ef_search = 130
 
     responses = [
         {
             "recall": 1.0,
-            "client_elapsed_s": 0.012,
-            "plan": {"mode": "function_entry"},
-            "timings_ms": {"total": 11.0, "candidates": 6.0, "rerank": 3.0},
-            "function_timings_ms": {
-                "handler_total": 11.0,
-                "faiss_search": 4.0,
-                "server_rerank_request": 3.0,
-            },
-            "server_timings_ms": {"total": 2.0, "rerank": 1.5},
+            "results": [{"id": 1}],
+            "client_final_result_elapsed_s": 0.030,
+            "function_timings_ms": {"handler_total": 6.0, "faiss_search": 3.0, "vm_accept_request": 2.0},
+            "server_timings_ms": {"rerank": 1.2, "total_before_callback": 1.5},
+            "function_metrics": {"candidate_count": 130},
         }
     ]
+    acks = [{"fc_accept_elapsed_s": 0.010}]
 
-    summary = module.summarize_run(responses, 0.012, 10, 130, 130, 1, "gist", 100.0)
+    summary = module.summarize(Args(), responses, acks, 0.030, 100.0)
 
-    assert summary["entrypoint"] == "function"
-    assert summary["candidate_k"] == 130
-    assert summary["ef_search"] == 130
-    assert summary["avg_entry_request_ms"] == 12.0
-    assert summary["avg_function_request_ms"] == 12.0
-    assert summary["avg_function_handler_ms"] == 11.0
-    assert summary["avg_function_ann_search_ms"] == 4.0
-    assert summary["avg_server_total_ms"] == 2.0
-    assert summary["avg_server_candidate_stage_ms"] == 0.0
-    assert summary["avg_server_rerank_ms"] == 1.5
+    assert summary["entrypoint"] == "function_callback"
+    assert summary["qps_client_final_result"] == 33.33
+    assert summary["avg_fc_accept_request_ms"] == 10.0
+    assert summary["avg_client_final_result_ms"] == 30.0
+    assert summary["avg_function_handler_ms"] == 6.0
+    assert summary["avg_function_ann_search_ms"] == 3.0
+    assert summary["avg_function_to_vm_accept_ms"] == 2.0
+    assert summary["avg_server_rerank_ms"] == 1.2

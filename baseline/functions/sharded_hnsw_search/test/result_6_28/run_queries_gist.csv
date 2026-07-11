@@ -1,0 +1,5 @@
+timestamp,dataset,query_count,concurrent_requests,client_elapsed_s,qps_client,recall,k,candidate_k,ef_search,cold_start_num,avg_cold_start_load_ms,avg_entry_request_ms,avg_function_request_ms,avg_function_handler_ms,avg_function_ann_search_ms,avg_function_rerank_ms,avg_server_total_ms,avg_server_candidate_stage_ms,avg_server_rerank_ms
+2026-06-28 11:56:25,gist,1000,1,59.70183,16.75,0.9772,10,10,92,0,0.0,59.558,59.558,37.287,2.855,0.0,0.0,0.0,0.0
+2026-06-28 12:47:15,gist,1000,1,66.115663,15.13,0.9772,10,10,92,0,0.0,66.022,66.022,44.348,2.929,0.0,0.0,0.0,0.0
+2026-06-28 12:48:53,gist,1000,1,59.804699,16.72,0.9772,10,10,92,0,0.0,59.71,59.71,37.938,2.93,0.0,0.0,0.0,0.0
+2026-06-28 12:50:18,gist,1000,1,58.447599,17.11,0.9526,10,10,60,0,0.0,58.35,58.35,36.536,2.17,0.0,0.0,0.0,0.0

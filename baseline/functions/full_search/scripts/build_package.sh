@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Build an Alibaba Cloud Function Compute upload package for full_search.
 #
-# hnswlib contains a native extension. Build it inside a Python 3.10 buster
-# container so the compiled .so does not depend on the host GLIBC.
+# faiss-cpu contains native extensions. Build it inside a Python 3.10 buster
+# container so binary dependencies are aligned with the Function Compute runtime.
 
 set -euo pipefail
 
@@ -15,7 +15,7 @@ HOST_UID="$(id -u)"
 HOST_GID="$(id -g)"
 
 if ! command -v docker >/dev/null 2>&1; then
-  echo "docker not found. hnswlib must be packaged in a Python 3.10 buster container." >&2
+  echo "docker not found. faiss-cpu must be packaged in a Python 3.10 buster container." >&2
   exit 1
 fi
 

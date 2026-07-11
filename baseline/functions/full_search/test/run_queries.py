@@ -8,7 +8,7 @@ import json
 import os
 import sys
 import time
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import Future, ThreadPoolExecutor, as_completed
 from pathlib import Path
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
@@ -16,9 +16,11 @@ from urllib.request import Request, urlopen
 
 ROOT = Path(__file__).resolve().parents[4]
 sys.path.insert(0, str(ROOT / "src"))
+sys.path.insert(0, str(ROOT / "workload-generator"))
 
 from vectors.fvecs import read_fvecs
 from vectors.ivecs import read_ivecs
+from workload_plan import QueryProgress, describe_workload_plan, load_workload_plan, resolve_request_count, submit_with_plan
 
 
 DEFAULT_DATASET = "sift100w"
@@ -54,14 +56,19 @@ def post_json(url: str, payload: dict, timeout: float) -> dict:
         headers={"content-type": "application/json"},
         method="POST",
     )
-    with urlopen(request, timeout=timeout) as response:
-        return json.loads(response.read().decode("utf-8"))
+    try:
+        with urlopen(request, timeout=timeout) as response:
+            return json.loads(response.read().decode("utf-8"))
+    except HTTPError as exc:
+        body = exc.read().decode("utf-8", errors="replace")
+        raise RuntimeError(f"HTTP {exc.code}: {body}") from exc
 
 
 def send_one_query(
     *,
     endpoint: str,
     query_id: int,
+    request_id: str,
     vector: list[float],
     k: int,
     candidate_k: int,
@@ -70,7 +77,7 @@ def send_one_query(
 ) -> dict:
     start = time.perf_counter()
     payload = {
-        "request_id": f"query-{query_id}",
+        "request_id": request_id,
         "query": vector,
         "candidate_k": candidate_k,
         "ef_search": ef_search,
@@ -80,6 +87,7 @@ def send_one_query(
 
     return {
         "query_id": query_id,
+        "source_query_id": query_id,
         "result_ids": result_ids,
         "client_elapsed_s": time.perf_counter() - start,
         "cold_start_id": response.get("cold_start_id"),
@@ -106,30 +114,77 @@ def run_queries(args: argparse.Namespace) -> list[dict]:
     if args.candidate_k < args.k:
         raise SystemExit("candidate_k must be greater than or equal to k")
 
-    queries = read_fvecs(query_file, max_vectors=args.query_num)
+    plan = load_workload_plan(args.plan_file, root=ROOT) if args.plan_file else None
+    try:
+        request_count = resolve_request_count(args.query_num, plan)
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from exc
+
+    queries = read_fvecs(query_file, max_vectors=request_count)
     groundtruth = read_ivecs(groundtruth_file, max_vectors=len(queries))
+    if len(queries) == 0:
+        raise SystemExit("query file has no vectors")
     if len(groundtruth) < len(queries):
         raise SystemExit("groundtruth row count is smaller than query count")
+    print(
+        f"Sending {request_count} requests directly to FC with client_workers={args.concurrent_requests} "
+        f"(cycling {len(queries)} query vectors, "
+        f"rough per-worker requests={request_count / max(1, args.concurrent_requests):.1f})"
+    )
+    print(describe_workload_plan(plan, request_count))
+    if request_count > len(queries):
+        print(f"Replaying {request_count} requests by cycling {len(queries)} query vectors")
+
+    progress = QueryProgress(request_count, enabled=not args.no_progress)
 
     def submit(i: int) -> dict:
-        response = send_one_query(
-            endpoint=args.endpoint,
-            query_id=i,
-            vector=queries[i].astype("float32").tolist(),
-            k=args.k,
-            candidate_k=args.candidate_k,
-            ef_search=args.ef_search,
-            timeout=args.timeout,
-        )
-        response["recall"] = calculate_recall(response["result_ids"], groundtruth[i].tolist(), args.k)
+        source_query_id = i % len(queries)
+        progress.mark_sent()
+        try:
+            response = send_one_query(
+                endpoint=args.endpoint,
+                query_id=source_query_id,
+                request_id=f"query-{i}",
+                vector=queries[source_query_id].astype("float32").tolist(),
+                k=args.k,
+                candidate_k=args.candidate_k,
+                ef_search=args.ef_search,
+                timeout=args.timeout,
+            )
+        except Exception as exc:
+            if not args.continue_on_error:
+                raise
+            return {
+                "query_id": i,
+                "source_query_id": source_query_id,
+                "result_ids": [],
+                "recall": 0.0,
+                "error": str(exc),
+                "client_elapsed_s": 0.0,
+            }
+        response["query_id"] = i
+        response["source_query_id"] = source_query_id
+        response["recall"] = calculate_recall(response["result_ids"], groundtruth[source_query_id].tolist(), args.k)
         return response
+
+    def track_future(future: Future) -> None:
+        future.add_done_callback(lambda _future: progress.mark_received())
 
     args.batch_start_wall_time = time.time()
     results: list[dict] = []
-    with ThreadPoolExecutor(max_workers=args.concurrent_requests) as executor:
-        futures = [executor.submit(submit, i) for i in range(len(queries))]
-        for future in as_completed(futures):
-            results.append(future.result())
+    try:
+        with ThreadPoolExecutor(max_workers=args.concurrent_requests) as executor:
+            futures, args.batch_start_wall_time = submit_with_plan(
+                executor,
+                request_count,
+                submit,
+                plan,
+                on_submit=track_future,
+            )
+            for future in as_completed(futures):
+                results.append(future.result())
+    finally:
+        progress.close()
     return results
 
 
@@ -159,8 +214,14 @@ def summarize_run(
     batch_start_wall_time: float,
 ) -> dict:
     query_count = len(responses)
+    error_count = sum(1 for item in responses if "error" in item)
+    success_count = query_count - error_count
 
-    avg_entry_request_ms = sum(item["client_elapsed_s"] for item in responses) * 1000.0 / query_count if query_count else 0.0
+    avg_entry_request_ms = (
+        sum(item.get("client_elapsed_s", 0.0) for item in responses if "error" not in item) * 1000.0 / success_count
+        if success_count
+        else 0.0
+    )
     function_timings = [item.get("timings_ms", {}) for item in responses]
     cold_start_load_ms = cold_start_load_times(responses, batch_start_wall_time)
     avg_cold_start_load_ms = sum(cold_start_load_ms.values()) / len(cold_start_load_ms) if cold_start_load_ms else 0.0
@@ -168,11 +229,13 @@ def summarize_run(
     def avg_function_timing(name: str) -> float:
         return _avg_metric(function_timings, name)
 
-    recall = sum(item.get("recall", 0.0) for item in responses) / query_count if query_count else 0.0
+    recall = sum(item.get("recall", 0.0) for item in responses if "error" not in item) / success_count if success_count else 0.0
     return {
         "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
         "dataset": args.dataset,
         "query_count": query_count,
+        "success_count": success_count,
+        "error_count": error_count,
         "concurrent_requests": args.concurrent_requests,
         "client_elapsed_s": round(elapsed, 6),
         "qps_client": round(query_count / elapsed, 2) if elapsed > 0 else 0.0,
@@ -185,7 +248,7 @@ def summarize_run(
         "avg_entry_request_ms": round(avg_entry_request_ms, 3),
         "avg_function_request_ms": round(avg_entry_request_ms, 3),
         "avg_function_handler_ms": round(avg_function_timing("handler_total"), 3),
-        "avg_function_ann_search_ms": round(avg_function_timing("hnsw_knn_query"), 3),
+        "avg_function_ann_search_ms": round(avg_function_timing("faiss_search"), 3),
         "avg_function_rerank_ms": 0.0,
         "avg_server_total_ms": 0.0,
         "avg_server_candidate_stage_ms": 0.0,
@@ -242,11 +305,19 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--query-file", default=None)
     parser.add_argument("--groundtruth-file", default=None)
     parser.add_argument("--query-num", type=int, default=10)
-    parser.add_argument("--concurrent-requests", type=int, default=1)
+    parser.add_argument(
+        "--concurrent-requests",
+        type=int,
+        default=1,
+        help="maximum client worker threads; in plan mode this is only a capacity cap, not fixed concurrency",
+    )
     parser.add_argument("--k", type=int, default=10)
     parser.add_argument("--candidate-k", type=int, default=10)
     parser.add_argument("--ef-search", type=int, default=10)
     parser.add_argument("--timeout", type=float, default=120.0)
+    parser.add_argument("--continue-on-error", action="store_true")
+    parser.add_argument("--plan-file", default=None, help="replay query arrivals from workload-generator plan.bin")
+    parser.add_argument("--no-progress", action="store_true", help="disable live sent/received progress output")
     parser.add_argument("--log-file", default=None)
     args = parser.parse_args()
     args.dataset = normalize_dataset(args.dataset)
@@ -264,7 +335,7 @@ def main() -> None:
     start = time.perf_counter()
     try:
         responses = run_queries(args)
-    except (HTTPError, URLError, TimeoutError) as exc:
+    except (HTTPError, URLError, TimeoutError, RuntimeError) as exc:
         raise SystemExit(f"Run failed: {exc}") from exc
 
     elapsed = time.perf_counter() - start
@@ -272,10 +343,14 @@ def main() -> None:
     write_rows(ROOT / args.log_file, [summary])
     print(
         f"Finished: queries={summary['query_count']}, "
+        f"success={summary['success_count']}, errors={summary['error_count']}, "
         f"concurrency={summary['concurrent_requests']}, elapsed={summary['client_elapsed_s']:.3f}s, "
         f"qps={summary['qps_client']:.2f}, recall@{args.k}={summary['recall']:.4f}, "
         f"cold_start_num={summary['cold_start_num']}"
     )
+    errors = [item for item in responses if "error" in item]
+    for item in errors[:5]:
+        print(f"Error query_id={item['query_id']}: {item['error']}")
 
 
 if __name__ == "__main__":

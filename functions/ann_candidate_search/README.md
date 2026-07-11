@@ -113,17 +113,23 @@ curl --noproxy '*' -X POST https://函数地址 \
 
 ## FaasANN 服务器和测试 CSV 字段
 
-通过 VM 服务器 `/search` 调用时，函数返回的 `timings_ms` 会被透传为 `function_timings_ms`，函数返回的 `function_metrics` 会被透传为 `function_metrics`。如果使用 function entry 模式，客户端直接请求云函数，云函数会把 VM `/rerank` 返回的 `timings_ms` 透传为 `server_timings_ms`。
+通过 VM 服务器 `/search` 调用时，函数返回的 `timings_ms` 会被透传为 `function_timings_ms`，函数返回的 `function_metrics` 会被透传为 `function_metrics`。
+
+如果要测试 `Client -> FC Candidate Search -> VM Server -> Client`，不要在这里加入 `rerank_server_url`。正确实现放在：
+
+```text
+/home/qian/Code/FaasANNS/to_FC
+```
 
 `tests/hnsw/run_queries.py` 写入 CSV 时会汇总：
 
-- `avg_entry_request_ms`：客户端到本次测试入口的一次请求平均耗时。server entry 时入口是 VM `/search`；function entry 时入口是云函数。
-- `avg_function_request_ms`：一次云函数 HTTP 请求平均耗时。server entry 时是 VM 调用云函数；function entry 时等于客户端到云函数入口请求。
+- `avg_entry_request_ms`：客户端到 VM `/search` 的一次请求平均耗时。
+- `avg_function_request_ms`：VM 调用云函数的一次 HTTP 请求平均耗时。
 - `avg_function_handler_ms`：云函数 handler 总耗时，来自函数内部 `handler_total`。
 - `avg_function_ann_search_ms`：云函数 ANN 搜索 kernel 耗时，对应 Faiss HNSW-PQ `faiss_search`。
 - `avg_function_rerank_ms`：云函数内 exact rerank 耗时；当前 `ann_candidate_search` 只返回候选，固定为 0。
-- `avg_server_total_ms`：VM server 总耗时。server entry 时来自 `/search` 的 `total`；function entry 时来自 `/rerank` 的 `total`。
-- `avg_server_candidate_stage_ms`：VM server 候选召回阶段耗时。function entry 时候选召回在云函数内完成，因此为 0。
+- `avg_server_total_ms`：VM server `/search` 总耗时。
+- `avg_server_candidate_stage_ms`：VM server 候选召回阶段耗时。
 - `avg_server_rerank_ms`：VM server raw-vector exact rerank 耗时。
 - `cold_start_num`：本批测试期间新出现的 `cold_start_id` 数量，也就是观察到几次实例索引加载。
 - `avg_cold_start_load_ms`：如果 `cold_start_num` 不为 0，按新出现的 `cold_start_id` 去重后统计每个容器 `function_metrics.index_load_ms` 的平均值；没有新加载容器时为 0。

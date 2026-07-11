@@ -1,9 +1,8 @@
 # -*- coding: utf-8 -*-
-"""云函数侧全量 HNSW 搜索。"""
+"""云函数侧 Faiss HNSW-Flat 全量搜索。"""
 
 from __future__ import annotations
 
-import json
 import os
 import threading
 import time
@@ -11,7 +10,7 @@ import uuid
 from dataclasses import dataclass
 from pathlib import Path
 
-import hnswlib
+import faiss
 import numpy as np
 
 
@@ -23,7 +22,13 @@ if not DATASET or "/" in DATASET or DATASET in {".", ".."}:
     raise ValueError(f"invalid FAASANN_DATASET={DATASET!r}")
 
 DATASET_ROOT = DATA_ROOT / DATASET
-INDEX_PATH = Path(os.environ.get("FAASANN_HNSW_INDEX_PATH", str(DATASET_ROOT / "index" / "full" / "full_hnsw.bin")))
+DEFAULT_INDEX_PATH = DATASET_ROOT / "index" / "full" / "faiss_hnswflat.index"
+INDEX_PATH = Path(
+    os.environ.get(
+        "FAASANN_FAISS_HNSW_INDEX_PATH",
+        os.environ.get("FAASANN_HNSW_INDEX_PATH", str(DEFAULT_INDEX_PATH)),
+    )
+)
 
 _lock = threading.Lock()
 _state: "State | None" = None
@@ -31,13 +36,13 @@ _state: "State | None" = None
 
 @dataclass(slots=True)
 class State:
-    """热实例中缓存的 hnswlib 索引状态。"""
+    """热实例中缓存的 Faiss HNSW-Flat 索引状态。"""
 
-    index: hnswlib.Index
+    index: faiss.Index
     index_path: Path
     dimension: int
     vector_count: int
-    space: str
+    metric_type: int
     cold_start_id: str
     index_loaded_at: float
     index_load_ms: float
@@ -60,7 +65,8 @@ def index_status() -> dict:
         "index_path": str(INDEX_PATH),
         "dimension": state.dimension if state else None,
         "vector_count": state.vector_count if state else None,
-        "space": state.space if state else None,
+        "index_type": "faiss_hnswflat" if state else None,
+        "metric_type": state.metric_type if state else None,
         "cold_start_id": state.cold_start_id if state else None,
         "index_loaded_at": state.index_loaded_at if state else None,
         "index_load_ms": state.index_load_ms if state else None,
@@ -69,7 +75,7 @@ def index_status() -> dict:
 
 
 def search(query: list[float], candidate_k: int, ef_search: int | None = None) -> list[dict]:
-    """执行一次 HNSW 查询，只返回候选结果，不暴露内部计时。"""
+    """执行一次 Faiss HNSW 查询，只返回候选结果，不暴露内部计时。"""
 
     candidates, _ = search_with_timings(query=query, candidate_k=candidate_k, ef_search=ef_search)
     return candidates
@@ -88,20 +94,20 @@ def search_with_timings(query: list[float], candidate_k: int, ef_search: int | N
     if candidate_k <= 0:
         raise ValueError("candidate_k must be positive")
 
-    if ef_search is not None and ef_search > 0:
-        set_ef_start = time.perf_counter()
-        state.index.set_ef(ef_search)
-        timings["hnsw_set_ef"] = _elapsed_ms(set_ef_start)
     k = min(candidate_k, state.vector_count)
-    hnsw_start = time.perf_counter()
-    ids, distances = state.index.knn_query(query_vector.reshape(1, -1), k=k)
-    timings["hnsw_knn_query"] = _elapsed_ms(hnsw_start)
+    faiss_start = time.perf_counter()
+    if ef_search is not None and ef_search > 0:
+        params = faiss.SearchParametersHNSW(efSearch=ef_search)
+        distances, ids = state.index.search(query_vector.reshape(1, -1), k, params=params)
+    else:
+        distances, ids = state.index.search(query_vector.reshape(1, -1), k)
+    timings["faiss_search"] = _elapsed_ms(faiss_start)
 
     format_start = time.perf_counter()
     candidates = [
         {"id": int(vector_id), "approx_score": float(score)}
         for vector_id, score in zip(ids[0], distances[0])
-        if vector_id >= 0
+        if int(vector_id) >= 0 and float(score) < 3.4028235e38
     ]
     timings["format_candidates"] = _elapsed_ms(format_start)
     timings["search_total"] = _elapsed_ms(total_start)
@@ -141,46 +147,27 @@ def load_state_with_timings() -> tuple[State, dict[str, float]]:
 
 
 def _load_hnsw_index(index_path: Path) -> State:
-    """从磁盘读取 hnswlib 索引及其元数据。"""
+    """从磁盘读取 Faiss HNSW-Flat 索引。"""
 
     load_start = time.perf_counter()
     if not index_path.exists():
-        raise FileNotFoundError(f"hnswlib index file not found: {index_path}")
-    meta = _load_meta(index_path)
+        raise FileNotFoundError(f"Faiss HNSW-Flat index file not found: {index_path}")
     index_file_size_bytes = index_path.stat().st_size
 
-    dimension = int(meta["dimension"])
-    vector_count = int(meta["vector_count"])
-    space = str(meta["space"])
-    index = hnswlib.Index(space=space, dim=dimension)
-    index.load_index(str(index_path), max_elements=vector_count)
-    index.set_ef(int(meta["ef_search"]))
+    index = faiss.read_index(str(index_path))
+    dimension = int(index.d)
+    vector_count = int(index.ntotal)
     return State(
         index=index,
         index_path=index_path,
         dimension=dimension,
         vector_count=vector_count,
-        space=space,
+        metric_type=int(index.metric_type),
         cold_start_id=uuid.uuid4().hex,
         index_loaded_at=time.time(),
         index_load_ms=_elapsed_ms(load_start),
         index_file_size_bytes=index_file_size_bytes,
     )
-
-
-def _load_meta(index_path: Path) -> dict:
-    """读取并校验 hnswlib 索引旁边的 meta JSON。"""
-
-    meta_path = index_path.with_suffix(".meta.json")
-    if not meta_path.exists():
-        raise FileNotFoundError(f"hnswlib metadata file not found: {meta_path}")
-
-    meta = json.loads(meta_path.read_text(encoding="utf-8"))
-    required_keys = {"dimension", "vector_count", "space", "ef_search"}
-    missing = sorted(required_keys - set(meta))
-    if missing:
-        raise ValueError(f"hnswlib metadata missing keys {missing}: {meta_path}")
-    return meta
 
 
 def _elapsed_ms(start: float) -> float:

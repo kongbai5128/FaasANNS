@@ -15,28 +15,37 @@ export no_proxy="*"
 export NO_PROXY="*"
 
 TIMEOUT="${TIMEOUT:-650}"
+PLAN_FILE="workload-generator/plan.bin"
+
+# ISLOCAL="_local"
+ISLOCAL=""
+# In plan mode this is only the maximum client worker capacity. Actual arrivals
+# and time-varying concurrency come from PLAN_FILE timestamps.
+CLIENT_WORKERS=1000
 # sift100w 0.99 221     0.95 99
 # exec "${PYTHON}" tests/hnsw/run_queries.py \
 #   --server-url "http://127.0.0.1:8080" \
 #   --dataset "${DATASET}" \
-#   --query-num 1000 \
-#   --concurrent-requests 1 \
+#   --query-num 0 \
+#   --concurrent-requests "${CLIENT_WORKERS}" \
 #   --k 10 \
 #   --candidate-k 221 \
 #   --ef-search 221 \
 #   --timeout "${TIMEOUT}" \
-#   --log-file "logs/run_local_queries_${DATASET}.csv" \
+#   --plan-file "${PLAN_FILE}" \
+#   --log-file "logs/run${ISLOCAL}_queries_${DATASET}.csv" \
 #   "$@"
 
 # gist 0.99 551         0.95 130
 exec "${PYTHON}" tests/hnsw/run_queries.py \
   --server-url "http://127.0.0.1:8080" \
   --dataset "${DATASET}" \
-  --query-num 1000 \
-  --concurrent-requests 30 \
+  --query-num 0 \
+  --concurrent-requests "${CLIENT_WORKERS}" \
   --k 10 \
   --candidate-k 130 \
   --ef-search 130 \
   --timeout "${TIMEOUT}" \
-  --log-file "logs/run_local_queries_${DATASET}.csv" \
+  --plan-file "${PLAN_FILE}" \
+  --log-file "logs/run${ISLOCAL}_queries_${DATASET}.csv" \
   "$@"

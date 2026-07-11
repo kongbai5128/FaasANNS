@@ -6,7 +6,14 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "${SCRIPT_DIR}/../../../.." && pwd)"
 PYTHON="${PROJECT_ROOT}/.venv/bin/python"
 # ENDPOINT="http://127.0.0.1:9000"
-ENDPOINT="http://base-lil-search-mbidkbhcit.cn-hongkong.fcapp.run"
+# ISLOCAL="_local"
+ISLOCAL=""
+# 内网
+ENDPOINT="http://base-lil-search-mbidkbhcit.cn-hongkong-vpc.fcapp.run"
+# ENDPOINT="http://base-lil-search-mbidkbhcit.cn-hongkong.fcapp.run"
+PLAN_FILE="workload-generator/plan.bin"
+TIMEOUT="${TIMEOUT:-650}"
+CLIENT_WORKERS="${CLIENT_WORKERS:-1000}"
 if [[ ! -x "${PYTHON}" ]]; then
   PYTHON="python3"
 fi
@@ -19,12 +26,14 @@ export NO_PROXY="*"
 # exec "${PYTHON}" baseline/functions/full_search/test/run_queries.py \
 #   --endpoint "${ENDPOINT}" \
 #   --dataset "${DATASET}" \
-#   --query-num 1000 \
-#   --concurrent-requests 1 \
+#   --query-num 0 \
+#   --concurrent-requests "${CLIENT_WORKERS}" \
 #   --k 10 \
 #   --candidate-k 10 \
 #   --ef-search 99 \
-#   --log-file "baseline/functions/full_search/test/result/run_local_queries_${DATASET}.csv" \
+#   --timeout "${TIMEOUT}" \
+#   --plan-file "${PLAN_FILE}" \
+#   --log-file "baseline/functions/full_search/test/result/run${ISLOCAL}_local_queries_${DATASET}.csv" \
 #   "$@"
 
 
@@ -32,10 +41,12 @@ export NO_PROXY="*"
 exec "${PYTHON}" baseline/functions/full_search/test/run_queries.py \
   --endpoint "${ENDPOINT}" \
   --dataset "${DATASET}" \
-  --query-num 1000 \
-  --concurrent-requests 1 \
+  --query-num 0 \
+  --concurrent-requests "${CLIENT_WORKERS}" \
   --k 10 \
   --candidate-k 10 \
-  --ef-search 100 \
-  --log-file "baseline/functions/full_search/test/result/run_local_queries_${DATASET}.csv" \
+  --ef-search 92 \
+  --timeout "${TIMEOUT}" \
+  --plan-file "${PLAN_FILE}" \
+  --log-file "baseline/functions/full_search/test/result/run${ISLOCAL}_queries_${DATASET}.csv" \
   "$@"
