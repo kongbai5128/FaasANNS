@@ -7,6 +7,7 @@ import csv
 import json
 import os
 import sys
+import threading
 import time
 from concurrent.futures import Future, ThreadPoolExecutor, as_completed
 from pathlib import Path
@@ -20,6 +21,7 @@ sys.path.insert(0, str(ROOT / "workload-generator"))
 
 from vectors.fvecs import read_fvecs
 from vectors.ivecs import read_ivecs
+from query_latency import write_p99_logs
 from workload_plan import QueryProgress, describe_workload_plan, load_workload_plan, resolve_request_count, submit_with_plan
 
 
@@ -75,6 +77,7 @@ def send_one_query(
     ef_search: int,
     timeout: float,
 ) -> dict:
+    started_at = time.time()
     start = time.perf_counter()
     payload = {
         "request_id": request_id,
@@ -84,13 +87,20 @@ def send_one_query(
         "ef_search": ef_search,
     }
     response = post_json(endpoint, payload, timeout)
+    if response.get("error"):
+        raise RuntimeError(f"Function error: {response['error']}")
     result_ids = [int(item["id"]) for item in response.get("candidates", [])[:k]]
+    elapsed_s = time.perf_counter() - start
+    finished_at = time.time()
 
     return {
         "query_id": query_id,
+        "request_id": request_id,
         "source_query_id": query_id,
         "result_ids": result_ids,
-        "client_elapsed_s": time.perf_counter() - start,
+        "client_elapsed_s": elapsed_s,
+        "_client_started_at_s": started_at,
+        "_client_finished_at_s": finished_at,
         "cold_start_id": response.get("cold_start_id"),
         "index_loaded_at": response.get("index_loaded_at"),
         "timings_ms": response.get("timings_ms", {}),
@@ -137,39 +147,60 @@ def run_queries(args: argparse.Namespace) -> list[dict]:
         print(f"Replaying {request_count} requests by cycling {len(queries)} query vectors")
 
     progress = QueryProgress(request_count, enabled=not args.no_progress)
+    stop_event = threading.Event()
 
     def submit(i: int) -> dict:
         source_query_id = i % len(queries)
         progress.mark_sent()
+        vector = queries[source_query_id].astype("float32").tolist()
+        attempt_started_at = time.time()
+        attempt_start = time.perf_counter()
         try:
             response = send_one_query(
                 endpoint=args.endpoint,
                 query_id=source_query_id,
                 request_id=f"query-{i}",
-                vector=queries[source_query_id].astype("float32").tolist(),
+                vector=vector,
                 k=args.k,
                 candidate_k=args.candidate_k,
                 ef_search=args.ef_search,
                 timeout=args.timeout,
             )
         except Exception as exc:
-            if not args.continue_on_error:
-                raise
             return {
                 "query_id": i,
+                "request_id": f"query-{i}",
                 "source_query_id": source_query_id,
                 "result_ids": [],
                 "recall": 0.0,
                 "error": str(exc),
-                "client_elapsed_s": 0.0,
+                "client_elapsed_s": time.perf_counter() - attempt_start,
+                "_client_started_at_s": attempt_started_at,
+                "_client_finished_at_s": time.time(),
+                "_planned_offset_s": plan.timestamps[i] if plan is not None else None,
             }
         response["query_id"] = i
         response["source_query_id"] = source_query_id
         response["recall"] = calculate_recall(response["result_ids"], groundtruth[source_query_id].tolist(), args.k)
+        response["_planned_offset_s"] = plan.timestamps[i] if plan is not None else None
         return response
 
     def track_future(future: Future) -> None:
-        future.add_done_callback(lambda _future: progress.mark_received())
+        def on_done(completed: Future) -> None:
+            if completed.cancelled():
+                return
+            progress.mark_received()
+            if args.continue_on_error:
+                return
+            try:
+                result = completed.result()
+            except Exception:
+                stop_event.set()
+                return
+            if isinstance(result, dict) and "error" in result:
+                stop_event.set()
+
+        future.add_done_callback(on_done)
 
     args.batch_start_wall_time = time.time()
     results: list[dict] = []
@@ -181,8 +212,14 @@ def run_queries(args: argparse.Namespace) -> list[dict]:
                 submit,
                 plan,
                 on_submit=track_future,
+                stop_event=stop_event,
             )
+            if stop_event.is_set():
+                for future in futures:
+                    future.cancel()
             for future in as_completed(futures):
+                if future.cancelled():
+                    continue
                 results.append(future.result())
     finally:
         progress.close()
@@ -335,6 +372,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--plan-file", default=None, help="replay query arrivals from workload-generator plan.bin")
     parser.add_argument("--no-progress", action="store_true", help="disable live sent/received progress output")
     parser.add_argument("--log-file", default=None)
+    parser.add_argument("--method-label", default="two_stage_memory")
+    parser.add_argument("--p99-window-seconds", type=float, default=5.0)
+    parser.add_argument("--p99-log-file", default=None)
+    parser.add_argument("--latency-trace-file", default=None)
     args = parser.parse_args()
     args.dataset = normalize_dataset(args.dataset)
     if args.query_file is None:
@@ -343,6 +384,19 @@ def parse_args() -> argparse.Namespace:
         args.groundtruth_file = default_groundtruth_file(args.dataset)
     if args.log_file is None:
         args.log_file = f"baseline/functions/Two_stage_search/test/result/run_queries_{args.dataset}.csv"
+    if args.p99_window_seconds <= 0:
+        raise SystemExit("--p99-window-seconds must be positive")
+    window_label = f"{args.p99_window_seconds:g}"
+    if args.p99_log_file is None:
+        args.p99_log_file = (
+            "baseline/functions/Two_stage_search/test/result/P99/7_24/"
+            f"{args.method_label}_{args.dataset}_p99_{window_label}s.csv"
+        )
+    if args.latency_trace_file is None:
+        args.latency_trace_file = (
+            "baseline/functions/Two_stage_search/test/result/P99/7_24/"
+            f"{args.method_label}_{args.dataset}_query_trace.csv"
+        )
     return args
 
 
@@ -357,6 +411,15 @@ def main() -> None:
     elapsed = time.perf_counter() - start
     summary = summarize_run(args, responses, elapsed, args.batch_start_wall_time)
     write_rows(ROOT / args.log_file, [summary])
+    write_p99_logs(
+        ROOT / args.p99_log_file,
+        ROOT / args.latency_trace_file,
+        responses,
+        args.batch_start_wall_time,
+        args.dataset,
+        args.p99_window_seconds,
+        method=args.method_label,
+    )
     print(
         f"Finished: queries={summary['query_count']}, "
         f"success={summary['success_count']}, errors={summary['error_count']}, "
@@ -367,6 +430,10 @@ def main() -> None:
     errors = [item for item in responses if "error" in item]
     for item in errors[:5]:
         print(f"Error query_id={item['query_id']}: {item['error']}")
+    print(f"P99 time series saved to {ROOT / args.p99_log_file}")
+    print(f"Per-query latency trace saved to {ROOT / args.latency_trace_file}")
+    if errors and not args.continue_on_error:
+        raise SystemExit(f"Run stopped after query error: {errors[0]['error']}")
 
 
 if __name__ == "__main__":

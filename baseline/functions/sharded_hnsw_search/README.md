@@ -78,14 +78,14 @@ dist/baseline_sharded_hnsw_search.zip
 当前 8 个 FC URL：
 
 ```text
-0: http://sharding-fazpzlktgc.cn-hongkong.fcapp.run
-1: http://sharding-fazozlktgc.cn-hongkong.fcapp.run
-2: http://sharding-faznzlktgc.cn-hongkong.fcapp.run
-3: http://sharding-fazmzlktgc.cn-hongkong.fcapp.run
-4: http://sharding-faztzlktgc.cn-hongkong.fcapp.run
-5: http://sharding-fazszlktgc.cn-hongkong.fcapp.run
-6: http://sharding-fazrzlktgc.cn-hongkong.fcapp.run
-7: http://sharding-fazqzlktgc.cn-hongkong.fcapp.run
+0: http://sharding-fazpzlktgc.cn-hongkong-vpc.fcapp.run
+1: http://sharding-fazozlktgc.cn-hongkong-vpc.fcapp.run
+2: http://sharding-faznzlktgc.cn-hongkong-vpc.fcapp.run
+3: http://sharding-fazmzlktgc.cn-hongkong-vpc.fcapp.run
+4: http://sharding-faztzlktgc.cn-hongkong-vpc.fcapp.run
+5: http://sharding-fazszlktgc.cn-hongkong-vpc.fcapp.run
+6: http://sharding-fazrzlktgc.cn-hongkong-vpc.fcapp.run
+7: http://sharding-fazqzlktgc.cn-hongkong-vpc.fcapp.run
 ```
 
 每个云函数使用同一个 zip，但启动命令不同：
@@ -120,7 +120,7 @@ FAASANN_PRELOAD_INDEX=1
 代码里 shard 0 默认 peer endpoints 已经设置为 1..7 号 URL；需要覆盖时再设置：
 
 ```bash
-FAASANN_PEER_ENDPOINTS=http://sharding-fazozlktgc.cn-hongkong.fcapp.run,http://sharding-faznzlktgc.cn-hongkong.fcapp.run,http://sharding-fazmzlktgc.cn-hongkong.fcapp.run,http://sharding-faztzlktgc.cn-hongkong.fcapp.run,http://sharding-fazszlktgc.cn-hongkong.fcapp.run,http://sharding-fazrzlktgc.cn-hongkong.fcapp.run,http://sharding-fazqzlktgc.cn-hongkong.fcapp.run
+FAASANN_PEER_ENDPOINTS=http://sharding-fazozlktgc.cn-hongkong-vpc.fcapp.run,http://sharding-faznzlktgc.cn-hongkong-vpc.fcapp.run,http://sharding-fazmzlktgc.cn-hongkong-vpc.fcapp.run,http://sharding-faztzlktgc.cn-hongkong-vpc.fcapp.run,http://sharding-fazszlktgc.cn-hongkong-vpc.fcapp.run,http://sharding-fazrzlktgc.cn-hongkong-vpc.fcapp.run,http://sharding-fazqzlktgc.cn-hongkong-vpc.fcapp.run
 ```
 
 ## 本地启动示例
@@ -148,6 +148,8 @@ PORT=9001 python3 app.py gist 1
 
 ```
 ./baseline/functions/sharded_hnsw_search/test/run_queries.sh
+p99尾延迟
+P99_WINDOW_SECONDS=1 ./baseline/functions/sharded_hnsw_search/test/run_queries.sh
 ```
 
 ## 请求类型

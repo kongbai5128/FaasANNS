@@ -16,6 +16,8 @@ export NO_PROXY="*"
 
 TIMEOUT="${TIMEOUT:-650}"
 PLAN_FILE="workload-generator/plan.bin"
+P99_LOG_DIR="${P99_LOG_DIR:-logs/P99/7_24}"
+P99_WINDOW_SECONDS="${P99_WINDOW_SECONDS:-5}"
 
 # ISLOCAL="_local"
 ISLOCAL=""
@@ -37,6 +39,7 @@ CLIENT_WORKERS=1000
 #   "$@"
 
 # gist 0.99 551         0.95 130
+mkdir -p "${P99_LOG_DIR}"
 exec "${PYTHON}" tests/hnsw/run_queries.py \
   --server-url "http://127.0.0.1:8080" \
   --dataset "${DATASET}" \
@@ -48,4 +51,7 @@ exec "${PYTHON}" tests/hnsw/run_queries.py \
   --timeout "${TIMEOUT}" \
   --plan-file "${PLAN_FILE}" \
   --log-file "logs/run${ISLOCAL}_queries_${DATASET}.csv" \
+  --p99-window-seconds "${P99_WINDOW_SECONDS}" \
+  --p99-log-file "${P99_LOG_DIR}/faasann_${DATASET}_p99_${P99_WINDOW_SECONDS}s.csv" \
+  --latency-trace-file "${P99_LOG_DIR}/faasann_${DATASET}_query_trace.csv" \
   "$@"

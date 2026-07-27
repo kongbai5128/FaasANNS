@@ -21,13 +21,13 @@ from index_loader import SHARD_ID, index_status, local_search, warmup
 
 DEFAULT_PEER_ENDPOINTS = ",".join(
     [
-        "http://sharding-fazozlktgc.cn-hongkong.fcapp.run",
-        "http://sharding-faznzlktgc.cn-hongkong.fcapp.run",
-        "http://sharding-fazmzlktgc.cn-hongkong.fcapp.run",
-        "http://sharding-faztzlktgc.cn-hongkong.fcapp.run",
-        "http://sharding-fazszlktgc.cn-hongkong.fcapp.run",
-        "http://sharding-fazrzlktgc.cn-hongkong.fcapp.run",
-        "http://sharding-fazqzlktgc.cn-hongkong.fcapp.run",
+        "http://sharding-fazozlktgc.cn-hongkong-vpc.fcapp.run",
+        "http://sharding-faznzlktgc.cn-hongkong-vpc.fcapp.run",
+        "http://sharding-fazmzlktgc.cn-hongkong-vpc.fcapp.run",
+        "http://sharding-faztzlktgc.cn-hongkong-vpc.fcapp.run",
+        "http://sharding-fazszlktgc.cn-hongkong-vpc.fcapp.run",
+        "http://sharding-fazrzlktgc.cn-hongkong-vpc.fcapp.run",
+        "http://sharding-fazqzlktgc.cn-hongkong-vpc.fcapp.run",
     ]
 )
 PEER_ENDPOINTS = [

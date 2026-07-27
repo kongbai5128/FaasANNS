@@ -4,3 +4,6 @@ python3 app.py gist
 
 
 ./baseline/functions/Two_stage_search/test/run_queries.sh
+P99_WINDOW_SECONDS=1 ./baseline/functions/Two_stage_search/test/run_queries.sh
+TWO_STAGE_VARIANT=nomemory P99_WINDOW_SECONDS=1 \
+  ./baseline/functions/Two_stage_search/test/run_queries.sh

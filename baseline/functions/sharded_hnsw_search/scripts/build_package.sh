@@ -37,7 +37,7 @@ cat > "$BUILD_DIR/runtime.env.example" <<'EOF'
 FAASANN_DATA_ROOT=/mnt/faasann
 FAASANN_DATASET=gist
 FAASANN_SHARDING_DIR=/mnt/faasann/gist/sharding_8
-FAASANN_PEER_ENDPOINTS=http://sharding-fazozlktgc.cn-hongkong.fcapp.run,http://sharding-faznzlktgc.cn-hongkong.fcapp.run,http://sharding-fazmzlktgc.cn-hongkong.fcapp.run,http://sharding-faztzlktgc.cn-hongkong.fcapp.run,http://sharding-fazszlktgc.cn-hongkong.fcapp.run,http://sharding-fazrzlktgc.cn-hongkong.fcapp.run,http://sharding-fazqzlktgc.cn-hongkong.fcapp.run
+FAASANN_PEER_ENDPOINTS=http://sharding-fazozlktgc.cn-hongkong-vpc.fcapp.run,http://sharding-faznzlktgc.cn-hongkong-vpc.fcapp.run,http://sharding-fazmzlktgc.cn-hongkong-vpc.fcapp.run,http://sharding-faztzlktgc.cn-hongkong-vpc.fcapp.run,http://sharding-fazszlktgc.cn-hongkong-vpc.fcapp.run,http://sharding-fazrzlktgc.cn-hongkong-vpc.fcapp.run,http://sharding-fazqzlktgc.cn-hongkong-vpc.fcapp.run
 EOF
 
 docker run --rm \

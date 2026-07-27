@@ -7,9 +7,7 @@ cd functions/ann_candidate_search
 python3 app.py gist
 
 ./scripts/run_queries.sh
-
-./scripts/run_queries_2FC.sh
-
+P99_WINDOW_SECONDS=1 ./scripts/run_queries.sh
 
 ./scripts/build_fc_package.sh
 

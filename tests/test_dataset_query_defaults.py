@@ -4,8 +4,12 @@ from __future__ import annotations
 
 import importlib.util
 import sys
+import time
 import uuid
 from pathlib import Path
+from types import SimpleNamespace
+
+import numpy as np
 
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -22,6 +26,13 @@ def test_full_search_runner_defaults_to_gist_files(monkeypatch) -> None:
     assert args.query_file == "data/gist/gist_query.fvecs"
     assert args.groundtruth_file == "data/gist/gist_groundtruth.ivecs"
     assert args.log_file == "baseline/functions/full_search/test/result/run_queries_gist.csv"
+    assert args.method_label == "full_search"
+    assert args.p99_log_file == (
+        "baseline/functions/full_search/test/result/P99/7_24/full_search_gist_p99_5s.csv"
+    )
+    assert args.latency_trace_file == (
+        "baseline/functions/full_search/test/result/P99/7_24/full_search_gist_query_trace.csv"
+    )
 
 
 def test_two_stage_runner_defaults_to_gist_files(monkeypatch) -> None:
@@ -35,6 +46,35 @@ def test_two_stage_runner_defaults_to_gist_files(monkeypatch) -> None:
     assert args.query_file == "data/gist/gist_query.fvecs"
     assert args.groundtruth_file == "data/gist/gist_groundtruth.ivecs"
     assert args.log_file == "baseline/functions/Two_stage_search/test/result/run_queries_gist.csv"
+    assert args.method_label == "two_stage_memory"
+    assert args.p99_log_file == (
+        "baseline/functions/Two_stage_search/test/result/P99/7_24/two_stage_memory_gist_p99_5s.csv"
+    )
+    assert args.latency_trace_file == (
+        "baseline/functions/Two_stage_search/test/result/P99/7_24/two_stage_memory_gist_query_trace.csv"
+    )
+
+
+def test_sharded_runner_defaults_to_gist_files(monkeypatch) -> None:
+    module = _load_module(
+        ROOT / "baseline" / "functions" / "sharded_hnsw_search" / "test" / "run_queries.py"
+    )
+
+    monkeypatch.setenv("FAASANN_DATASET", "gist")
+    monkeypatch.setattr(sys, "argv", ["run_queries.py"])
+    args = module.parse_args()
+
+    assert args.dataset == "gist"
+    assert args.query_file == "data/gist/gist_query.fvecs"
+    assert args.groundtruth_file == "data/gist/gist_groundtruth.ivecs"
+    assert args.log_file == "baseline/functions/sharded_hnsw_search/test/result/run_queries_gist.csv"
+    assert args.method_label == "sharded_hnsw"
+    assert args.p99_log_file == (
+        "baseline/functions/sharded_hnsw_search/test/result/P99/7_24/sharded_hnsw_gist_p99_5s.csv"
+    )
+    assert args.latency_trace_file == (
+        "baseline/functions/sharded_hnsw_search/test/result/P99/7_24/sharded_hnsw_gist_query_trace.csv"
+    )
 
 
 def test_server_runner_defaults_to_gist_files(monkeypatch) -> None:
@@ -48,6 +88,9 @@ def test_server_runner_defaults_to_gist_files(monkeypatch) -> None:
     assert args.query_file == "data/gist/gist_query.fvecs"
     assert args.groundtruth_file == "data/gist/gist_groundtruth.ivecs"
     assert args.log_file == "logs/run_queries_gist.csv"
+    assert args.p99_window_seconds == 5.0
+    assert args.p99_log_file == "logs/P99/7_24/faasann_gist_p99_5s.csv"
+    assert args.latency_trace_file == "logs/P99/7_24/faasann_gist_query_trace.csv"
 
 
 def _load_module(path: Path):
@@ -101,6 +144,91 @@ def test_server_runner_summary_uses_clear_timing_names() -> None:
     assert summary["avg_server_total_ms"] == 8.0
     assert summary["avg_server_candidate_stage_ms"] == 5.0
     assert summary["avg_server_rerank_ms"] == 2.0
+
+
+def test_server_runner_builds_fixed_window_p99() -> None:
+    module = _load_module(ROOT / "tests" / "hnsw" / "run_queries.py")
+    responses = [
+        {
+            "query_id": 0,
+            "request_id": "query-0",
+            "client_elapsed_s": 0.010,
+            "_client_started_at_s": 100.5,
+            "_client_finished_at_s": 100.51,
+            "_planned_offset_s": 0.4,
+            "plan": {"mode": "faas"},
+        },
+        {
+            "query_id": 1,
+            "request_id": "query-1",
+            "client_elapsed_s": 0.030,
+            "_client_started_at_s": 104.0,
+            "_client_finished_at_s": 104.03,
+            "_planned_offset_s": 3.8,
+            "plan": {"mode": "faas"},
+        },
+        {
+            "query_id": 2,
+            "request_id": "query-2",
+            "client_elapsed_s": 0.020,
+            "_client_started_at_s": 106.0,
+            "_client_finished_at_s": 106.02,
+            "_planned_offset_s": 5.9,
+            "plan": {"mode": "faas"},
+            "error": "timeout",
+        },
+    ]
+
+    trace = module.build_latency_trace(
+        responses,
+        batch_start_wall_time=100.0,
+        dataset="gist",
+        method="faasann",
+    )
+    windows = module.build_p99_windows(trace, window_seconds=5.0)
+
+    assert len(windows) == 2
+    assert windows[0]["method"] == "faasann"
+    assert windows[0]["request_count"] == 2
+    assert windows[0]["success_count"] == 2
+    assert windows[0]["p99_client_latency_ms"] == 30.0
+    assert windows[0]["p99_schedule_slip_ms"] == 200.0
+    assert windows[1]["request_count"] == 1
+    assert windows[1]["success_count"] == 0
+    assert windows[1]["error_count"] == 1
+    assert windows[1]["p99_client_latency_ms"] == ""
+
+
+def test_server_runner_stops_plan_after_first_query_error(monkeypatch) -> None:
+    module = _load_module(ROOT / "tests" / "hnsw" / "run_queries.py")
+
+    def fail_query(**_kwargs):
+        raise RuntimeError("synthetic query failure")
+
+    monkeypatch.setattr(module, "send_one_query", fail_query)
+    plan = SimpleNamespace(timestamps=[0.0, 0.5, 1.0], offset=0.0)
+    started_at = time.perf_counter()
+    responses, _batch_start = module.run_queries(
+        server_url="http://127.0.0.1:1",
+        query_vectors=np.array([[0.0, 0.0]], dtype=np.float32),
+        groundtruth=np.array([[0]], dtype=np.int32),
+        count=3,
+        k=1,
+        candidate_k=1,
+        ef_search=1,
+        use_faas=True,
+        send_vectors=True,
+        concurrent_requests=1,
+        timeout=1.0,
+        continue_on_error=False,
+        plan=plan,
+        show_progress=False,
+    )
+
+    assert time.perf_counter() - started_at < 0.4
+    assert len(responses) == 1
+    assert responses[0]["query_id"] == 0
+    assert responses[0]["error"] == "synthetic query failure"
 
 
 def test_to_fc_runner_defaults_to_gist_files(monkeypatch) -> None:

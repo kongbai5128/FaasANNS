@@ -4,3 +4,4 @@ python3 app.py gist
 
 
 ./baseline/functions/full_search/test/run_queries.sh
+P99_WINDOW_SECONDS=1 ./baseline/functions/full_search/test/run_queries.sh

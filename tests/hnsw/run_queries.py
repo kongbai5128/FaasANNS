@@ -15,6 +15,7 @@ import csv
 import json
 import os
 import sys
+import threading
 import time
 from concurrent.futures import Future, ThreadPoolExecutor, as_completed
 from pathlib import Path
@@ -27,6 +28,7 @@ sys.path.insert(0, str(ROOT / "workload-generator"))
 
 from vectors.fvecs import read_fvecs
 from vectors.ivecs import read_ivecs
+from query_latency import build_latency_trace, build_p99_windows, write_p99_logs
 from workload_plan import QueryProgress, describe_workload_plan, load_workload_plan, resolve_request_count, submit_with_plan
 
 
@@ -65,7 +67,14 @@ def post_json(url: str, payload: dict, timeout: float) -> dict:
     )
     try:
         with urlopen(request, timeout=timeout) as response:
-            return json.loads(response.read().decode("utf-8"))
+            data = json.loads(response.read().decode("utf-8"))
+            process_time = response.headers.get("x-process-time-ms")
+            if process_time is not None and isinstance(data, dict):
+                try:
+                    data["_vm_http_process_ms"] = float(process_time)
+                except ValueError:
+                    pass
+            return data
     except HTTPError as exc:
         body = exc.read().decode("utf-8", errors="replace")
         raise RuntimeError(f"HTTP {exc.code}: {body}") from exc
@@ -98,9 +107,12 @@ def send_one_query(
         payload["use_faas"] = use_faas
     url = f"{server_url.rstrip('/')}/search"
 
+    started_at = time.time()
     start = time.perf_counter()
     response = post_json(url, payload, timeout)
     response["client_elapsed_s"] = time.perf_counter() - start
+    response["_client_started_at_s"] = started_at
+    response["_client_finished_at_s"] = time.time()
     return response
 
 
@@ -132,11 +144,14 @@ def run_queries(
         raise ValueError("no query vectors loaded")
 
     progress = QueryProgress(count, enabled=show_progress)
+    stop_event = threading.Event()
 
     def submit(i: int) -> dict:
         source_query_id = i % len(query_vectors)
         progress.mark_sent()
         vector = query_vectors[source_query_id].astype("float32").tolist() if send_vectors else None
+        attempt_started_at = time.time()
+        attempt_start = time.perf_counter()
         try:
             response = send_one_query(
                 server_url=server_url,
@@ -150,31 +165,60 @@ def run_queries(
                 timeout=timeout,
             )
         except Exception as exc:
-            if not continue_on_error:
-                raise
             return {
                 "query_id": i,
+                "request_id": f"query-{i}",
                 "source_query_id": source_query_id,
                 "result_ids": [],
                 "recall": 0.0,
                 "error": str(exc),
-                "client_elapsed_s": 0.0,
+                "client_elapsed_s": time.perf_counter() - attempt_start,
+                "_client_started_at_s": attempt_started_at,
+                "_client_finished_at_s": time.time(),
+                "_planned_offset_s": plan.timestamps[i] if plan is not None else None,
             }
         result_ids = [int(item["id"]) for item in response.get("results", [])]
         response["query_id"] = i
         response["source_query_id"] = source_query_id
         response["result_ids"] = result_ids
         response["recall"] = calculate_recall(result_ids, groundtruth[source_query_id].tolist(), k)
+        response["_planned_offset_s"] = plan.timestamps[i] if plan is not None else None
         return response
 
     def track_future(future: Future) -> None:
-        future.add_done_callback(lambda _future: progress.mark_received())
+        def on_done(completed: Future) -> None:
+            if completed.cancelled():
+                return
+            progress.mark_received()
+            if continue_on_error:
+                return
+            try:
+                result = completed.result()
+            except Exception:
+                stop_event.set()
+                return
+            if isinstance(result, dict) and "error" in result:
+                stop_event.set()
+
+        future.add_done_callback(on_done)
 
     results: list[dict] = []
     try:
         with ThreadPoolExecutor(max_workers=concurrent_requests) as executor:
-            futures, batch_start_wall_time = submit_with_plan(executor, count, submit, plan, on_submit=track_future)
+            futures, batch_start_wall_time = submit_with_plan(
+                executor,
+                count,
+                submit,
+                plan,
+                on_submit=track_future,
+                stop_event=stop_event,
+            )
+            if stop_event.is_set():
+                for future in futures:
+                    future.cancel()
             for future in as_completed(futures):
+                if future.cancelled():
+                    continue
                 results.append(future.result())
     finally:
         progress.close()
@@ -268,6 +312,84 @@ def summarize_run(
     }
 
 
+def write_timing_diagnostics(path: Path, responses: list[dict], summary: dict) -> None:
+    """Write stage distributions needed to locate client/VM queueing."""
+
+    successful = [item for item in responses if "error" not in item]
+
+    def values(getter) -> list[float]:
+        result = []
+        for item in successful:
+            value = getter(item)
+            if value is not None:
+                result.append(float(value))
+        return result
+
+    client_ms = values(lambda item: float(item.get("client_elapsed_s", 0.0)) * 1000.0)
+    vm_http_ms = values(lambda item: item.get("_vm_http_process_ms"))
+    app_total_ms = values(lambda item: item.get("timings_ms", {}).get("total", 0.0))
+    plan_ms = values(lambda item: item.get("timings_ms", {}).get("plan", 0.0))
+    candidate_ms = values(lambda item: item.get("timings_ms", {}).get("candidates", 0.0))
+    remote_ms = values(lambda item: item.get("timings_ms", {}).get("remote_invoke"))
+    rerank_ms = values(lambda item: item.get("timings_ms", {}).get("rerank", 0.0))
+
+    client_minus_vm = _differences(client_ms, vm_http_ms)
+    vm_minus_app = _differences(vm_http_ms, app_total_ms)
+    app_unaccounted = [
+        total - plan - candidate - rerank
+        for total, plan, candidate, rerank in zip(app_total_ms, plan_ms, candidate_ms, rerank_ms)
+    ]
+
+    lines = [
+        f"timestamp={time.strftime('%Y-%m-%d %H:%M:%S')}",
+        f"query_count={len(responses)} success_count={len(successful)}",
+        f"vm_http_samples={len(vm_http_ms)}/{len(successful)}",
+        "stage_ms:",
+    ]
+    for name, data in (
+        ("client_elapsed", client_ms),
+        ("vm_http_process", vm_http_ms),
+        ("search_service_total", app_total_ms),
+        ("plan", plan_ms),
+        ("candidates", candidate_ms),
+        ("remote_invoke", remote_ms),
+        ("rerank", rerank_ms),
+        ("client_minus_vm_http", client_minus_vm),
+        ("vm_http_minus_search_service", vm_minus_app),
+        ("search_service_unaccounted", app_unaccounted),
+    ):
+        lines.append(f"{name}={_distribution(data)}")
+    lines.append(
+        "summary="
+        f"avg_entry_ms:{summary['avg_entry_request_ms']} "
+        f"avg_server_total_ms:{summary['avg_server_total_ms']} "
+        f"avg_function_request_ms:{summary['avg_function_request_ms']}"
+    )
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as fp:
+        fp.write("\n".join(lines) + "\n\n")
+
+
+def _differences(left: list[float], right: list[float]) -> list[float]:
+    return [a - b for a, b in zip(left, right)] if len(left) == len(right) else []
+
+
+def _distribution(data: list[float]) -> str:
+    if not data:
+        return "samples:0"
+    ordered = sorted(data)
+
+    def percentile(value: float) -> float:
+        index = min(len(ordered) - 1, int((len(ordered) - 1) * value))
+        return ordered[index]
+
+    return (
+        f"samples:{len(data)} avg:{sum(data) / len(data):.3f} "
+        f"p50:{percentile(0.50):.3f} p95:{percentile(0.95):.3f} "
+        f"p99:{percentile(0.99):.3f} max:{ordered[-1]:.3f}"
+    )
+
+
 def _avg_metric(items: list[dict], name: str) -> float:
     values = []
     for item in items:
@@ -346,6 +468,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--plan-file", default=None, help="replay query arrivals from workload-generator plan.bin")
     parser.add_argument("--no-progress", action="store_true", help="disable live sent/received progress output")
     parser.add_argument("--log-file", default=None)
+    parser.add_argument("--timing-log-file", default=None)
+    parser.add_argument("--p99-window-seconds", type=float, default=5.0)
+    parser.add_argument("--p99-log-file", default=None)
+    parser.add_argument("--latency-trace-file", default=None)
     args = parser.parse_args()
     args.dataset = normalize_dataset(args.dataset)
     if args.query_file is None:
@@ -354,6 +480,15 @@ def parse_args() -> argparse.Namespace:
         args.groundtruth_file = default_groundtruth_file(args.dataset)
     if args.log_file is None:
         args.log_file = f"logs/run_queries_{args.dataset}.csv"
+    if args.timing_log_file is None:
+        args.timing_log_file = f"logs/run_queries_{args.dataset}_timing.log"
+    window_label = f"{args.p99_window_seconds:g}"
+    if args.p99_window_seconds <= 0:
+        raise SystemExit("--p99-window-seconds must be positive")
+    if args.p99_log_file is None:
+        args.p99_log_file = f"logs/P99/7_24/faasann_{args.dataset}_p99_{window_label}s.csv"
+    if args.latency_trace_file is None:
+        args.latency_trace_file = f"logs/P99/7_24/faasann_{args.dataset}_query_trace.csv"
     return args
 
 
@@ -427,6 +562,16 @@ def main() -> None:
         batch_start_wall_time,
     )
     write_rows(log_file, [summary])
+    write_timing_diagnostics(ROOT / args.timing_log_file, responses, summary)
+    write_p99_logs(
+        ROOT / args.p99_log_file,
+        ROOT / args.latency_trace_file,
+        responses,
+        batch_start_wall_time,
+        args.dataset,
+        args.p99_window_seconds,
+        method="faasann",
+    )
     print(
         f"Finished: queries={summary['query_count']}, "
         f"success={summary['success_count']}, errors={summary['error_count']}, "
@@ -441,6 +586,11 @@ def main() -> None:
     for item in errors[:5]:
         print(f"Error query_id={item['query_id']}: {item['error']}")
     print(f"Log saved to {log_file}")
+    print(f"Timing log saved to {ROOT / args.timing_log_file}")
+    print(f"P99 time series saved to {ROOT / args.p99_log_file}")
+    print(f"Per-query latency trace saved to {ROOT / args.latency_trace_file}")
+    if errors and not args.continue_on_error:
+        raise SystemExit(f"Run stopped after query error: {errors[0]['error']}")
 
 
 if __name__ == "__main__":

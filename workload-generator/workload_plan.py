@@ -153,6 +153,7 @@ def submit_with_plan(
     *,
     spin_threshold_s: float = 0.03,
     on_submit: Callable[[Future], None] | None = None,
+    stop_event: threading.Event | None = None,
 ) -> tuple[list[Future], float]:
     """Submit query tasks immediately or at timestamps from ``plan``.
 
@@ -168,7 +169,12 @@ def submit_with_plan(
 
     if plan is None:
         batch_start_wall_time = time.time()
-        return [track(executor.submit(submit, i)) for i in range(count)], batch_start_wall_time
+        futures: list[Future] = []
+        for i in range(count):
+            if stop_event is not None and stop_event.is_set():
+                break
+            futures.append(track(executor.submit(submit, i)))
+        return futures, batch_start_wall_time
 
     if count > len(plan.timestamps):
         raise ValueError(f"query count {count} exceeds workload plan length {len(plan.timestamps)}")
@@ -188,7 +194,8 @@ def submit_with_plan(
             group.append(items[pos][0])
             pos += 1
 
-        _wait_until(t0, target, spin_threshold_s)
+        if not _wait_until(t0, target, spin_threshold_s, stop_event):
+            break
         if len(group) == 1:
             futures.append(track(executor.submit(submit, group[0])))
             continue
@@ -199,17 +206,29 @@ def submit_with_plan(
     return futures, batch_start_wall_time
 
 
-def _wait_until(t0: float, target: float, spin_threshold_s: float) -> None:
+def _wait_until(
+    t0: float,
+    target: float,
+    spin_threshold_s: float,
+    stop_event: threading.Event | None = None,
+) -> bool:
     while True:
+        if stop_event is not None and stop_event.is_set():
+            return False
         elapsed = time.perf_counter() - t0
         remaining = target - elapsed
         if remaining <= 0:
-            return
+            return True
         if remaining <= spin_threshold_s:
             while time.perf_counter() - t0 < target:
                 pass
-            return
-        time.sleep(max(0.0, remaining - spin_threshold_s))
+            return stop_event is None or not stop_event.is_set()
+        wait_seconds = max(0.0, remaining - spin_threshold_s)
+        if stop_event is not None:
+            if stop_event.wait(wait_seconds):
+                return False
+        else:
+            time.sleep(wait_seconds)
 
 
 def _run_after_gate(gate: threading.Event, submit: Callable[[int], object], i: int) -> object:
