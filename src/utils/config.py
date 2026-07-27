@@ -12,6 +12,7 @@ class ServerConfig:
     host: str
     port: int
     log_level: str
+    workers: int = 1
 
 
 @dataclass

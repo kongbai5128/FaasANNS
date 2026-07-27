@@ -8,10 +8,9 @@ from __future__ import annotations
 
 import asyncio
 import email.utils
-import json
 from concurrent.futures import ThreadPoolExecutor
-from urllib.error import HTTPError
-import urllib.request
+
+import httpx
 
 from faas.payload import CandidateSearchPayload
 
@@ -26,7 +25,15 @@ class AliyunHTTPProvider:
             max_workers=invoke_workers,
             thread_name_prefix="faasann-faas-invoke",
         )
-        self.opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+        self.client = httpx.Client(
+            timeout=httpx.Timeout(timeout_seconds),
+            limits=httpx.Limits(
+                max_connections=invoke_workers,
+                max_keepalive_connections=min(invoke_workers, 256),
+                keepalive_expiry=30.0,
+            ),
+            trust_env=False,
+        )
         if not self.endpoint:
             raise RuntimeError("faas.endpoints.default is required when provider=aliyun_http")
 
@@ -40,24 +47,26 @@ class AliyunHTTPProvider:
 
     def close(self) -> None:
         self.executor.shutdown(wait=True, cancel_futures=True)
+        self.client.close()
 
     def _post_json(self, payload: dict):
-        body = json.dumps(payload).encode("utf-8")
-        request = urllib.request.Request(
-            self.endpoint,
-            data=body,
-            headers={
-                "content-type": "application/json",
-                "date": email.utils.formatdate(usegmt=True),
-            },
-            method="POST",
-        )
         try:
-            with self.opener.open(request, timeout=self.timeout_seconds) as response:
-                return json.loads(response.read().decode("utf-8"))
-        except HTTPError as exc:
-            body = exc.read().decode("utf-8", errors="replace")
-            raise RuntimeError(f"FaaS HTTP {exc.code}: {body}") from exc
+            response = self.client.post(
+                self.endpoint,
+                json=payload,
+                headers={
+                    "content-type": "application/json",
+                    "date": email.utils.formatdate(usegmt=True),
+                },
+            )
+        except httpx.HTTPError as exc:
+            raise RuntimeError(f"FaaS request failed: {exc}") from exc
+        if response.is_error:
+            raise RuntimeError(f"FaaS HTTP {response.status_code}: {response.text}")
+        try:
+            return response.json()
+        except ValueError as exc:
+            raise RuntimeError("FaaS response is not valid JSON") from exc
 
     def _post_candidates(self, payload: dict) -> list[dict]:
         data = self._post_json(payload)

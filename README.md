@@ -100,6 +100,16 @@ Upload `data/sift100w/index/full/pq/faiss_hnswpq.index` to the function mount pa
 python src/main.py --config configs/server.aliyun.json
 ```
 
+Use multiple HTTP server processes only when the VM has enough memory for one
+raw-vector and HNSW view per process:
+
+```bash
+python src/main.py --config configs/server.aliyun.json --workers 2
+```
+
+The configured `faas_invoke_workers` value is treated as a total budget and is
+divided across the server processes.
+
 Example query:
 
 ```bash

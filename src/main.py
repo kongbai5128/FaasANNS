@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import os
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -28,6 +29,10 @@ from vectors.vector_store import VectorStore
 
 logger = logging.getLogger(__name__)
 
+CONFIG_PATH_ENV = "FAASANN_SERVER_CONFIG"
+SERVER_WORKERS_ENV = "FAASANN_SERVER_WORKERS"
+HTTP_KEEP_ALIVE_TIMEOUT_SECONDS = 35.0
+
 
 def load_vector_store(config: AppConfig, config_path: str) -> VectorStore:
     base_path = project_path(config_path, config.dataset.base_path)
@@ -42,7 +47,7 @@ def load_vector_store(config: AppConfig, config_path: str) -> VectorStore:
     )
 
 
-def create_app(config_path: str) -> FastAPI:
+def create_app(config_path: str, *, server_workers: int = 1) -> FastAPI:
     # 读取 server/local 或 server/aliyun 配置，并按配置设置日志级别。
     config = load_config(config_path)
     configure_logging(config.server.log_level)
@@ -61,10 +66,14 @@ def create_app(config_path: str) -> FastAPI:
 
     # provider 决定第一阶段候选召回发到哪里：阿里云 HTTP 函数，或本地 HNSW 模拟器。
     if config.faas.provider == "aliyun_http":
+        invoke_workers = max(
+            1,
+            (config.search.pipeline.faas_invoke_workers + server_workers - 1) // server_workers,
+        )
         provider = AliyunHTTPProvider(
             endpoints=config.faas.endpoints,
             timeout_seconds=config.faas.invoke_timeout_seconds,
-            invoke_workers=config.search.pipeline.faas_invoke_workers,
+            invoke_workers=invoke_workers,
         )
     elif config.faas.provider == "local":
         provider = LocalFaaSProvider(local_index)
@@ -102,32 +111,61 @@ def create_app(config_path: str) -> FastAPI:
     app.state.search_service = search_service
     app.state.vector_store = vector_store
     logger.info(
-        "server initialized: vectors=%d dim=%d index_backend=%s",
+        "server initialized: vectors=%d dim=%d index_backend=%s server_workers=%d faas_invoke_workers=%d",
         vector_store.size,
         vector_store.dimension,
         local_index.backend,
+        server_workers,
+        invoke_workers if config.faas.provider == "aliyun_http" else 0,
     )
     return app
+
+
+def create_configured_app() -> FastAPI:
+    config_path = os.environ.get(CONFIG_PATH_ENV)
+    if not config_path:
+        raise RuntimeError(f"{CONFIG_PATH_ENV} is required for multi-worker startup")
+    workers = int(os.environ.get(SERVER_WORKERS_ENV, "1"))
+    return create_app(config_path, server_workers=workers)
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run the FaasANN server")
     parser.add_argument("--config", default="configs/server.local.json", help="path to server config")
+    parser.add_argument("--workers", type=int, default=None, help="override server.workers")
     return parser.parse_args()
 
 
 def main() -> None:
     args = parse_args()
     config = load_config(args.config)
-    app = create_app(args.config)
+    workers = args.workers if args.workers is not None else config.server.workers
+    if workers <= 0:
+        raise SystemExit("workers must be positive")
 
     import uvicorn
 
+    if workers == 1:
+        uvicorn.run(
+            create_app(args.config, server_workers=1),
+            host=config.server.host,
+            port=config.server.port,
+            log_level=config.server.log_level,
+            timeout_keep_alive=HTTP_KEEP_ALIVE_TIMEOUT_SECONDS,
+            reload=False,
+        )
+        return
+
+    os.environ[CONFIG_PATH_ENV] = str(Path(args.config).resolve())
+    os.environ[SERVER_WORKERS_ENV] = str(workers)
     uvicorn.run(
-        app,
+        "main:create_configured_app",
+        factory=True,
+        workers=workers,
         host=config.server.host,
         port=config.server.port,
         log_level=config.server.log_level,
+        timeout_keep_alive=HTTP_KEEP_ALIVE_TIMEOUT_SECONDS,
         reload=False,
     )
 

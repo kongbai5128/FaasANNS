@@ -2,6 +2,12 @@ cd /home/qian/Code/FaasANNS
 source .venv/bin/activate
 python src/main.py --config configs/server.aliyun.json
 
+# 第一轮：只测试连接池
+python src/main.py --config configs/server.aliyun.json
+
+# 第二轮：连接池 + 两个入口进程
+python src/main.py --config configs/server.aliyun.json --workers 2
+
 source .venv/bin/activate
 cd functions/ann_candidate_search
 python3 app.py gist

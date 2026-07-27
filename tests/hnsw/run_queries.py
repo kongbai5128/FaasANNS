@@ -12,15 +12,14 @@ from __future__ import annotations
 
 import argparse
 import csv
-import json
 import os
 import sys
 import threading
 import time
 from concurrent.futures import Future, ThreadPoolExecutor, as_completed
 from pathlib import Path
-from urllib.error import HTTPError, URLError
-from urllib.request import Request, urlopen
+
+import httpx
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "src"))
@@ -58,26 +57,24 @@ def default_groundtruth_file(dataset: str) -> str:
     return f"data/{dataset}/{prefix}_groundtruth.ivecs"
 
 
-def post_json(url: str, payload: dict, timeout: float) -> dict:
-    request = Request(
-        url,
-        data=json.dumps(payload).encode("utf-8"),
-        headers={"content-type": "application/json"},
-        method="POST",
-    )
+def post_json(client: httpx.Client, url: str, payload: dict, timeout: float) -> dict:
     try:
-        with urlopen(request, timeout=timeout) as response:
-            data = json.loads(response.read().decode("utf-8"))
-            process_time = response.headers.get("x-process-time-ms")
-            if process_time is not None and isinstance(data, dict):
-                try:
-                    data["_vm_http_process_ms"] = float(process_time)
-                except ValueError:
-                    pass
-            return data
-    except HTTPError as exc:
-        body = exc.read().decode("utf-8", errors="replace")
-        raise RuntimeError(f"HTTP {exc.code}: {body}") from exc
+        response = client.post(url, json=payload, timeout=timeout)
+    except httpx.HTTPError as exc:
+        raise RuntimeError(f"HTTP request failed: {exc}") from exc
+    if response.is_error:
+        raise RuntimeError(f"HTTP {response.status_code}: {response.text}")
+    try:
+        data = response.json()
+    except ValueError as exc:
+        raise RuntimeError("HTTP response is not valid JSON") from exc
+    process_time = response.headers.get("x-process-time-ms")
+    if process_time is not None and isinstance(data, dict):
+        try:
+            data["_vm_http_process_ms"] = float(process_time)
+        except ValueError:
+            pass
+    return data
 
 
 def send_one_query(
@@ -90,6 +87,7 @@ def send_one_query(
     ef_search: int | None,
     use_faas: bool | None,
     timeout: float,
+    client: httpx.Client,
 ) -> dict:
     payload: dict = {
         "request_id": request_id,
@@ -109,7 +107,7 @@ def send_one_query(
 
     started_at = time.time()
     start = time.perf_counter()
-    response = post_json(url, payload, timeout)
+    response = post_json(client, url, payload, timeout)
     response["client_elapsed_s"] = time.perf_counter() - start
     response["_client_started_at_s"] = started_at
     response["_client_finished_at_s"] = time.time()
@@ -163,6 +161,7 @@ def run_queries(
                 ef_search=ef_search,
                 use_faas=use_faas,
                 timeout=timeout,
+                client=client,
             )
         except Exception as exc:
             return {
@@ -204,22 +203,31 @@ def run_queries(
 
     results: list[dict] = []
     try:
-        with ThreadPoolExecutor(max_workers=concurrent_requests) as executor:
-            futures, batch_start_wall_time = submit_with_plan(
-                executor,
-                count,
-                submit,
-                plan,
-                on_submit=track_future,
-                stop_event=stop_event,
-            )
-            if stop_event.is_set():
-                for future in futures:
-                    future.cancel()
-            for future in as_completed(futures):
-                if future.cancelled():
-                    continue
-                results.append(future.result())
+        with httpx.Client(
+            timeout=httpx.Timeout(timeout),
+            limits=httpx.Limits(
+                max_connections=concurrent_requests,
+                max_keepalive_connections=min(concurrent_requests, 256),
+                keepalive_expiry=30.0,
+            ),
+            trust_env=False,
+        ) as client:
+            with ThreadPoolExecutor(max_workers=concurrent_requests) as executor:
+                futures, batch_start_wall_time = submit_with_plan(
+                    executor,
+                    count,
+                    submit,
+                    plan,
+                    on_submit=track_future,
+                    stop_event=stop_event,
+                )
+                if stop_event.is_set():
+                    for future in futures:
+                        future.cancel()
+                for future in as_completed(futures):
+                    if future.cancelled():
+                        continue
+                    results.append(future.result())
     finally:
         progress.close()
     return results, batch_start_wall_time
@@ -547,10 +555,13 @@ def main() -> None:
             plan=plan,
             show_progress=not args.no_progress,
         )
-    except (HTTPError, URLError, TimeoutError, RuntimeError) as exc:
+    except (TimeoutError, RuntimeError) as exc:
         raise SystemExit(f"Run failed: {exc}") from exc
 
     elapsed = time.perf_counter() - start_t
+    errors = [item for item in responses if "error" in item]
+    if errors and not args.continue_on_error:
+        raise SystemExit(f"Run stopped after query error: {errors[0]['error']}")
     summary = summarize_run(
         responses,
         elapsed,
@@ -582,15 +593,12 @@ def main() -> None:
         f"local={summary['local_count']}, faas={summary['faas_count']}, "
         f"cold_start_num={summary['cold_start_num']}"
     )
-    errors = [item for item in responses if "error" in item]
     for item in errors[:5]:
         print(f"Error query_id={item['query_id']}: {item['error']}")
     print(f"Log saved to {log_file}")
     print(f"Timing log saved to {ROOT / args.timing_log_file}")
     print(f"P99 time series saved to {ROOT / args.p99_log_file}")
     print(f"Per-query latency trace saved to {ROOT / args.latency_trace_file}")
-    if errors and not args.continue_on_error:
-        raise SystemExit(f"Run stopped after query error: {errors[0]['error']}")
 
 
 if __name__ == "__main__":

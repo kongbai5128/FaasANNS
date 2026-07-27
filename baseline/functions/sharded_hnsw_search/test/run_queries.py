@@ -418,6 +418,9 @@ def main() -> None:
 
     query_elapsed = time.perf_counter() - query_start
     total_elapsed = time.perf_counter() - total_start
+    errors = [item for item in responses if "error" in item]
+    if errors and not args.continue_on_error:
+        raise SystemExit(f"Run stopped after query error: {errors[0]['error']}")
     summary = summarize_run(args, responses, query_elapsed, total_elapsed, args.batch_start_wall_time)
     write_rows(ROOT / args.log_file, [summary])
     write_p99_logs(
@@ -438,13 +441,10 @@ def main() -> None:
         f"query_cold_start_shard_num={summary['query_cold_start_shard_num']}, "
         f"avg_peer_request_max_ms={summary['avg_peer_request_max_ms']}"
     )
-    errors = [item for item in responses if "error" in item]
     for item in errors[:5]:
         print(f"Error query_id={item['query_id']}: {item['error']}")
     print(f"P99 time series saved to {ROOT / args.p99_log_file}")
     print(f"Per-query latency trace saved to {ROOT / args.latency_trace_file}")
-    if errors and not args.continue_on_error:
-        raise SystemExit(f"Run stopped after query error: {errors[0]['error']}")
 
 
 if __name__ == "__main__":
