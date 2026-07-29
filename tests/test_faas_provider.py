@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import httpx
 import pytest
 
 from faas.aliyun_fc_provider import AliyunHTTPProvider
@@ -11,12 +10,17 @@ from faas.aliyun_fc_provider import AliyunHTTPProvider
 def test_aliyun_provider_rejects_response_without_candidates(monkeypatch) -> None:
     provider = AliyunHTTPProvider({"default": "http://example.test"}, timeout_seconds=10.0, invoke_workers=1)
 
-    response = httpx.Response(
-        200,
-        json={"error": "bad response"},
-        request=httpx.Request("POST", "http://example.test"),
-    )
-    monkeypatch.setattr(provider.client, "post", lambda *_args, **_kwargs: response)
+    class Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, traceback):
+            return None
+
+        def read(self) -> bytes:
+            return b'{"error": "bad response"}'
+
+    monkeypatch.setattr(provider.opener, "open", lambda request, timeout: Response())
 
     with pytest.raises(ValueError, match="missing required"):
         provider._post_candidates({"request_id": "x"})
@@ -25,12 +29,17 @@ def test_aliyun_provider_rejects_response_without_candidates(monkeypatch) -> Non
 def test_aliyun_provider_rejects_non_list_candidates(monkeypatch) -> None:
     provider = AliyunHTTPProvider({"default": "http://example.test"}, timeout_seconds=10.0, invoke_workers=1)
 
-    response = httpx.Response(
-        200,
-        json={"candidates": None},
-        request=httpx.Request("POST", "http://example.test"),
-    )
-    monkeypatch.setattr(provider.client, "post", lambda *_args, **_kwargs: response)
+    class Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, traceback):
+            return None
+
+        def read(self) -> bytes:
+            return b'{"candidates": null}'
+
+    monkeypatch.setattr(provider.opener, "open", lambda request, timeout: Response())
 
     with pytest.raises(ValueError, match="candidates must be a list"):
         provider._post_candidates({"request_id": "x"})
@@ -39,18 +48,20 @@ def test_aliyun_provider_rejects_non_list_candidates(monkeypatch) -> None:
 def test_aliyun_provider_attaches_cold_start_metadata(monkeypatch) -> None:
     provider = AliyunHTTPProvider({"default": "http://example.test"}, timeout_seconds=10.0, invoke_workers=1)
 
-    response = httpx.Response(
-        200,
-        json={
-            "candidates": [{"id": 1}],
-            "cold_start_id": "cold-1",
-            "index_loaded_at": 123.5,
-            "timings_ms": {"handler_total": 2.5},
-            "function_metrics": {"candidate_count": 1},
-        },
-        request=httpx.Request("POST", "http://example.test"),
-    )
-    monkeypatch.setattr(provider.client, "post", lambda *_args, **_kwargs: response)
+    class Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, traceback):
+            return None
+
+        def read(self) -> bytes:
+            return (
+                b'{"candidates": [{"id": 1}], "cold_start_id": "cold-1", "index_loaded_at": 123.5, '
+                b'"timings_ms": {"handler_total": 2.5}, "function_metrics": {"candidate_count": 1}}'
+            )
+
+    monkeypatch.setattr(provider.opener, "open", lambda request, timeout: Response())
 
     candidates = provider._post_candidates({"request_id": "x"})
 

@@ -146,6 +146,53 @@ def test_server_runner_summary_uses_clear_timing_names() -> None:
     assert summary["avg_server_rerank_ms"] == 2.0
 
 
+def test_server_runner_timing_diagnostics_reports_entry_workers(tmp_path) -> None:
+    module = _load_module(ROOT / "tests" / "hnsw" / "run_queries.py")
+    responses = [
+        {
+            "client_elapsed_s": 0.100,
+            "_client_started_at_s": 100.01,
+            "_planned_offset_s": 0.0,
+            "_client_to_asgi_ms": 20.0,
+            "_vm_http_process_ms": 60.0,
+            "_server_to_client_ms": 20.0,
+            "_worker_pid": 101,
+            "_worker_active_at_entry": 3.0,
+            "_worker_max_active": 4.0,
+            "plan": {"mode": "faas"},
+            "timings_ms": {"total": 50.0, "plan": 1.0, "candidates": 40.0, "rerank": 9.0},
+        },
+        {
+            "client_elapsed_s": 0.120,
+            "_client_started_at_s": 100.02,
+            "_planned_offset_s": 0.0,
+            "_client_to_asgi_ms": 30.0,
+            "_vm_http_process_ms": 70.0,
+            "_server_to_client_ms": 20.0,
+            "_worker_pid": 202,
+            "_worker_active_at_entry": 2.0,
+            "_worker_max_active": 5.0,
+            "plan": {"mode": "faas"},
+            "timings_ms": {"total": 60.0, "plan": 1.0, "candidates": 50.0, "rerank": 9.0},
+        },
+    ]
+    summary = {
+        "avg_entry_request_ms": 110.0,
+        "avg_server_total_ms": 55.0,
+        "avg_function_request_ms": 45.0,
+    }
+    path = tmp_path / "timing.log"
+
+    module.write_timing_diagnostics(path, responses, summary, batch_start_wall_time=100.0)
+
+    output = path.read_text(encoding="utf-8")
+    assert "client_dispatch_delay=samples:2 avg:15.000" in output
+    assert "client_to_asgi=samples:2 avg:25.000" in output
+    assert "worker_count=2" in output
+    assert "worker pid=101 requests=1 local=0 faas=1 peak_active=4" in output
+    assert "worker pid=202 requests=1 local=0 faas=1 peak_active=5" in output
+
+
 def test_server_runner_builds_fixed_window_p99() -> None:
     module = _load_module(ROOT / "tests" / "hnsw" / "run_queries.py")
     responses = [

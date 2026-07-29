@@ -5,7 +5,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from main import load_vector_store
+from main import _workers_per_process, load_vector_store
 from search.hnsw import HNSWIndex
 from utils.config import (
     AppConfig,
@@ -61,6 +61,12 @@ def test_load_vector_store_rejects_missing_dataset(tmp_path) -> None:
 
     with pytest.raises(FileNotFoundError, match="dataset file not found"):
         load_vector_store(config, tmp_path / "configs" / "server.json")
+
+
+def test_pipeline_workers_are_shared_across_server_processes() -> None:
+    assert _workers_per_process(1000, 2) == 500
+    assert _workers_per_process(10, 2) == 5
+    assert _workers_per_process(1, 2) == 1
 
 
 def test_hnsw_index_rejects_missing_configured_index(tmp_path) -> None:

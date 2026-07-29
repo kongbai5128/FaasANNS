@@ -102,9 +102,21 @@ def test_load_config_accepts_complete_config(
 
     assert config.server.port == 8080
     assert config.server.workers == 1
+    assert config.server.worker_healthcheck_timeout_seconds == 120
     assert config.dataset.base_path == base_path
     assert config.dataset.dimension == dimension
     assert config.search.hnsw.hnsw_index_path == hnsw_index_path
+
+
+def test_load_config_accepts_multiple_server_workers(tmp_path: Path) -> None:
+    data = _full_config()
+    data["server"]["workers"] = 2
+    data["server"]["worker_healthcheck_timeout_seconds"] = 90
+
+    config = load_config(_write_config(tmp_path, data))
+
+    assert config.server.workers == 2
+    assert config.server.worker_healthcheck_timeout_seconds == 90
 
 
 def test_load_config_rejects_missing_key(tmp_path: Path) -> None:
@@ -113,15 +125,6 @@ def test_load_config_rejects_missing_key(tmp_path: Path) -> None:
 
     with pytest.raises(ValueError, match="dataset: .*dimension"):
         load_config(_write_config(tmp_path, data))
-
-
-def test_load_config_accepts_server_workers(tmp_path: Path) -> None:
-    data = _full_config()
-    data["server"]["workers"] = 2
-
-    config = load_config(_write_config(tmp_path, data))
-
-    assert config.server.workers == 2
 
 
 def test_load_config_rejects_unknown_key(tmp_path: Path) -> None:

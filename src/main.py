@@ -10,6 +10,7 @@ import argparse
 import logging
 import os
 from contextlib import asynccontextmanager
+from dataclasses import replace
 from pathlib import Path
 
 from fastapi import FastAPI
@@ -31,7 +32,6 @@ logger = logging.getLogger(__name__)
 
 CONFIG_PATH_ENV = "FAASANN_SERVER_CONFIG"
 SERVER_WORKERS_ENV = "FAASANN_SERVER_WORKERS"
-HTTP_KEEP_ALIVE_TIMEOUT_SECONDS = 35.0
 
 
 def load_vector_store(config: AppConfig, config_path: str) -> VectorStore:
@@ -51,6 +51,22 @@ def create_app(config_path: str, *, server_workers: int = 1) -> FastAPI:
     # 读取 server/local 或 server/aliyun 配置，并按配置设置日志级别。
     config = load_config(config_path)
     configure_logging(config.server.log_level)
+    worker_pipeline = replace(
+        config.search.pipeline,
+        local_search_workers=_workers_per_process(
+            config.search.pipeline.local_search_workers,
+            server_workers,
+        ),
+        faas_invoke_workers=_workers_per_process(
+            config.search.pipeline.faas_invoke_workers,
+            server_workers,
+        ),
+        rerank_workers=_workers_per_process(
+            config.search.pipeline.rerank_workers,
+            server_workers,
+        ),
+    )
+    worker_search_config = replace(config.search, pipeline=worker_pipeline)
 
     # VM 侧始终加载原始向量；无论候选来自本地还是云函数，最终 exact rerank 都要用它。
     vector_store = load_vector_store(config, config_path)
@@ -66,14 +82,10 @@ def create_app(config_path: str, *, server_workers: int = 1) -> FastAPI:
 
     # provider 决定第一阶段候选召回发到哪里：阿里云 HTTP 函数，或本地 HNSW 模拟器。
     if config.faas.provider == "aliyun_http":
-        invoke_workers = max(
-            1,
-            (config.search.pipeline.faas_invoke_workers + server_workers - 1) // server_workers,
-        )
         provider = AliyunHTTPProvider(
             endpoints=config.faas.endpoints,
             timeout_seconds=config.faas.invoke_timeout_seconds,
-            invoke_workers=invoke_workers,
+            invoke_workers=worker_pipeline.faas_invoke_workers,
         )
     elif config.faas.provider == "local":
         provider = LocalFaaSProvider(local_index)
@@ -82,7 +94,7 @@ def create_app(config_path: str, *, server_workers: int = 1) -> FastAPI:
 
     # 组装运行时状态：QPS 统计、offload 决策、预热管理和两阶段搜索服务。
     metrics = RuntimeMetrics()
-    planner = OffloadPlanner(config.search, config.scaling)
+    planner = OffloadPlanner(worker_search_config, config.scaling)
     warmup_manager = WarmupManager(provider=provider, config=config.scaling)
     search_service = SearchService(
         vectors=vector_store,
@@ -91,7 +103,7 @@ def create_app(config_path: str, *, server_workers: int = 1) -> FastAPI:
         warmup_manager=warmup_manager,
         planner=planner,
         metrics=metrics,
-        config=config.search,
+        config=worker_search_config,
     )
 
     @asynccontextmanager
@@ -111,14 +123,22 @@ def create_app(config_path: str, *, server_workers: int = 1) -> FastAPI:
     app.state.search_service = search_service
     app.state.vector_store = vector_store
     logger.info(
-        "server initialized: vectors=%d dim=%d index_backend=%s server_workers=%d faas_invoke_workers=%d",
+        "server initialized: vectors=%d dim=%d index_backend=%s pid=%d server_workers=%d "
+        "local_search_workers=%d faas_invoke_workers=%d rerank_workers=%d",
         vector_store.size,
         vector_store.dimension,
         local_index.backend,
+        os.getpid(),
         server_workers,
-        invoke_workers if config.faas.provider == "aliyun_http" else 0,
+        worker_pipeline.local_search_workers,
+        worker_pipeline.faas_invoke_workers if config.faas.provider == "aliyun_http" else 0,
+        worker_pipeline.rerank_workers,
     )
     return app
+
+
+def _workers_per_process(total_workers: int, server_workers: int) -> int:
+    return max(1, (total_workers + server_workers - 1) // server_workers)
 
 
 def create_configured_app() -> FastAPI:
@@ -133,6 +153,12 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run the FaasANN server")
     parser.add_argument("--config", default="configs/server.local.json", help="path to server config")
     parser.add_argument("--workers", type=int, default=None, help="override server.workers")
+    parser.add_argument(
+        "--worker-healthcheck-timeout",
+        type=int,
+        default=None,
+        help="seconds Uvicorn waits for a worker health response during startup and runtime",
+    )
     return parser.parse_args()
 
 
@@ -140,8 +166,15 @@ def main() -> None:
     args = parse_args()
     config = load_config(args.config)
     workers = args.workers if args.workers is not None else config.server.workers
+    worker_healthcheck_timeout = (
+        args.worker_healthcheck_timeout
+        if args.worker_healthcheck_timeout is not None
+        else config.server.worker_healthcheck_timeout_seconds
+    )
     if workers <= 0:
         raise SystemExit("workers must be positive")
+    if worker_healthcheck_timeout <= 0:
+        raise SystemExit("worker healthcheck timeout must be positive")
 
     import uvicorn
 
@@ -151,7 +184,6 @@ def main() -> None:
             host=config.server.host,
             port=config.server.port,
             log_level=config.server.log_level,
-            timeout_keep_alive=HTTP_KEEP_ALIVE_TIMEOUT_SECONDS,
             reload=False,
         )
         return
@@ -165,7 +197,7 @@ def main() -> None:
         host=config.server.host,
         port=config.server.port,
         log_level=config.server.log_level,
-        timeout_keep_alive=HTTP_KEEP_ALIVE_TIMEOUT_SECONDS,
+        timeout_worker_healthcheck=worker_healthcheck_timeout,
         reload=False,
     )
 

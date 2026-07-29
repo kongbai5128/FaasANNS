@@ -13,6 +13,7 @@ class ServerConfig:
     port: int
     log_level: str
     workers: int = 1
+    worker_healthcheck_timeout_seconds: int = 120
 
 
 @dataclass

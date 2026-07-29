@@ -12,14 +12,15 @@ from __future__ import annotations
 
 import argparse
 import csv
+import json
 import os
 import sys
 import threading
 import time
 from concurrent.futures import Future, ThreadPoolExecutor, as_completed
 from pathlib import Path
-
-import httpx
+from urllib.error import HTTPError, URLError
+from urllib.request import Request, urlopen
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "src"))
@@ -57,24 +58,58 @@ def default_groundtruth_file(dataset: str) -> str:
     return f"data/{dataset}/{prefix}_groundtruth.ivecs"
 
 
-def post_json(client: httpx.Client, url: str, payload: dict, timeout: float) -> dict:
+def post_json(url: str, payload: dict, timeout: float, client_started_ns: int) -> dict:
+    request = Request(
+        url,
+        data=json.dumps(payload).encode("utf-8"),
+        headers={
+            "content-type": "application/json",
+            "x-faasann-client-started-ns": str(client_started_ns),
+        },
+        method="POST",
+    )
     try:
-        response = client.post(url, json=payload, timeout=timeout)
-    except httpx.HTTPError as exc:
-        raise RuntimeError(f"HTTP request failed: {exc}") from exc
-    if response.is_error:
-        raise RuntimeError(f"HTTP {response.status_code}: {response.text}")
-    try:
-        data = response.json()
-    except ValueError as exc:
-        raise RuntimeError("HTTP response is not valid JSON") from exc
-    process_time = response.headers.get("x-process-time-ms")
-    if process_time is not None and isinstance(data, dict):
-        try:
-            data["_vm_http_process_ms"] = float(process_time)
-        except ValueError:
-            pass
-    return data
+        with urlopen(request, timeout=timeout) as response:
+            data = json.loads(response.read().decode("utf-8"))
+            process_time = response.headers.get("x-process-time-ms")
+            if process_time is not None and isinstance(data, dict):
+                try:
+                    data["_vm_http_process_ms"] = float(process_time)
+                except ValueError:
+                    pass
+            if isinstance(data, dict):
+                _copy_diagnostic_headers(response.headers, data)
+            return data
+    except HTTPError as exc:
+        body = exc.read().decode("utf-8", errors="replace")
+        raise RuntimeError(f"HTTP {exc.code}: {body}") from exc
+
+
+def _copy_diagnostic_headers(headers, data: dict) -> None:
+    float_headers = {
+        "x-faasann-client-to-asgi-ms": "_client_to_asgi_ms",
+        "x-faasann-worker-active": "_worker_active_at_entry",
+        "x-faasann-worker-max-active": "_worker_max_active",
+    }
+    int_headers = {
+        "x-faasann-worker-pid": "_worker_pid",
+        "x-faasann-asgi-started-ns": "_server_asgi_started_ns",
+        "x-faasann-response-ready-ns": "_server_response_ready_ns",
+    }
+    for header, key in float_headers.items():
+        value = headers.get(header)
+        if value is not None:
+            try:
+                data[key] = float(value)
+            except ValueError:
+                pass
+    for header, key in int_headers.items():
+        value = headers.get(header)
+        if value is not None:
+            try:
+                data[key] = int(value)
+            except ValueError:
+                pass
 
 
 def send_one_query(
@@ -87,7 +122,6 @@ def send_one_query(
     ef_search: int | None,
     use_faas: bool | None,
     timeout: float,
-    client: httpx.Client,
 ) -> dict:
     payload: dict = {
         "request_id": request_id,
@@ -105,12 +139,17 @@ def send_one_query(
         payload["use_faas"] = use_faas
     url = f"{server_url.rstrip('/')}/search"
 
-    started_at = time.time()
+    started_at_ns = time.time_ns()
+    started_at = started_at_ns / 1_000_000_000.0
     start = time.perf_counter()
-    response = post_json(client, url, payload, timeout)
+    response = post_json(url, payload, timeout, started_at_ns)
+    finished_at_ns = time.time_ns()
     response["client_elapsed_s"] = time.perf_counter() - start
     response["_client_started_at_s"] = started_at
-    response["_client_finished_at_s"] = time.time()
+    response["_client_finished_at_s"] = finished_at_ns / 1_000_000_000.0
+    response_ready_ns = response.get("_server_response_ready_ns")
+    if isinstance(response_ready_ns, int):
+        response["_server_to_client_ms"] = (finished_at_ns - response_ready_ns) / 1_000_000.0
     return response
 
 
@@ -161,7 +200,6 @@ def run_queries(
                 ef_search=ef_search,
                 use_faas=use_faas,
                 timeout=timeout,
-                client=client,
             )
         except Exception as exc:
             return {
@@ -203,31 +241,22 @@ def run_queries(
 
     results: list[dict] = []
     try:
-        with httpx.Client(
-            timeout=httpx.Timeout(timeout),
-            limits=httpx.Limits(
-                max_connections=concurrent_requests,
-                max_keepalive_connections=min(concurrent_requests, 256),
-                keepalive_expiry=30.0,
-            ),
-            trust_env=False,
-        ) as client:
-            with ThreadPoolExecutor(max_workers=concurrent_requests) as executor:
-                futures, batch_start_wall_time = submit_with_plan(
-                    executor,
-                    count,
-                    submit,
-                    plan,
-                    on_submit=track_future,
-                    stop_event=stop_event,
-                )
-                if stop_event.is_set():
-                    for future in futures:
-                        future.cancel()
-                for future in as_completed(futures):
-                    if future.cancelled():
-                        continue
-                    results.append(future.result())
+        with ThreadPoolExecutor(max_workers=concurrent_requests) as executor:
+            futures, batch_start_wall_time = submit_with_plan(
+                executor,
+                count,
+                submit,
+                plan,
+                on_submit=track_future,
+                stop_event=stop_event,
+            )
+            if stop_event.is_set():
+                for future in futures:
+                    future.cancel()
+            for future in as_completed(futures):
+                if future.cancelled():
+                    continue
+                results.append(future.result())
     finally:
         progress.close()
     return results, batch_start_wall_time
@@ -320,7 +349,12 @@ def summarize_run(
     }
 
 
-def write_timing_diagnostics(path: Path, responses: list[dict], summary: dict) -> None:
+def write_timing_diagnostics(
+    path: Path,
+    responses: list[dict],
+    summary: dict,
+    batch_start_wall_time: float,
+) -> None:
     """Write stage distributions needed to locate client/VM queueing."""
 
     successful = [item for item in responses if "error" not in item]
@@ -334,7 +368,18 @@ def write_timing_diagnostics(path: Path, responses: list[dict], summary: dict) -
         return result
 
     client_ms = values(lambda item: float(item.get("client_elapsed_s", 0.0)) * 1000.0)
+    client_dispatch_ms = values(
+        lambda item: (
+            float(item["_client_started_at_s"])
+            - batch_start_wall_time
+            - float(item.get("_planned_offset_s") or 0.0)
+        )
+        * 1000.0
+    )
+    client_to_asgi_ms = values(lambda item: item.get("_client_to_asgi_ms"))
     vm_http_ms = values(lambda item: item.get("_vm_http_process_ms"))
+    server_to_client_ms = values(lambda item: item.get("_server_to_client_ms"))
+    worker_active = values(lambda item: item.get("_worker_active_at_entry"))
     app_total_ms = values(lambda item: item.get("timings_ms", {}).get("total", 0.0))
     plan_ms = values(lambda item: item.get("timings_ms", {}).get("plan", 0.0))
     candidate_ms = values(lambda item: item.get("timings_ms", {}).get("candidates", 0.0))
@@ -356,7 +401,11 @@ def write_timing_diagnostics(path: Path, responses: list[dict], summary: dict) -
     ]
     for name, data in (
         ("client_elapsed", client_ms),
+        ("client_dispatch_delay", client_dispatch_ms),
+        ("client_to_asgi", client_to_asgi_ms),
         ("vm_http_process", vm_http_ms),
+        ("server_to_client", server_to_client_ms),
+        ("worker_active_at_entry", worker_active),
         ("search_service_total", app_total_ms),
         ("plan", plan_ms),
         ("candidates", candidate_ms),
@@ -367,6 +416,27 @@ def write_timing_diagnostics(path: Path, responses: list[dict], summary: dict) -
         ("search_service_unaccounted", app_unaccounted),
     ):
         lines.append(f"{name}={_distribution(data)}")
+
+    workers: dict[int, list[dict]] = {}
+    for item in successful:
+        worker_pid = item.get("_worker_pid")
+        if isinstance(worker_pid, int):
+            workers.setdefault(worker_pid, []).append(item)
+    lines.append(f"worker_count={len(workers)}")
+    for worker_pid, items in sorted(workers.items()):
+        worker_client = [float(item.get("client_elapsed_s", 0.0)) * 1000.0 for item in items]
+        worker_vm_http = [float(item["_vm_http_process_ms"]) for item in items if "_vm_http_process_ms" in item]
+        worker_admission = [float(item["_client_to_asgi_ms"]) for item in items if "_client_to_asgi_ms" in item]
+        worker_peak = max((float(item.get("_worker_max_active", 0.0)) for item in items), default=0.0)
+        local_count = sum(1 for item in items if item.get("plan", {}).get("mode") == "local")
+        lines.append(
+            f"worker pid={worker_pid} requests={len(items)} local={local_count} "
+            f"faas={len(items) - local_count} peak_active={worker_peak:.0f} "
+            f"client_elapsed=({_distribution(worker_client)}) "
+            f"client_to_asgi=({_distribution(worker_admission)}) "
+            f"vm_http_process=({_distribution(worker_vm_http)})"
+        )
+    lines.append("clock_note=client_to_asgi and server_to_client require synchronized client/server clocks")
     lines.append(
         "summary="
         f"avg_entry_ms:{summary['avg_entry_request_ms']} "
@@ -555,7 +625,7 @@ def main() -> None:
             plan=plan,
             show_progress=not args.no_progress,
         )
-    except (TimeoutError, RuntimeError) as exc:
+    except (HTTPError, URLError, TimeoutError, RuntimeError) as exc:
         raise SystemExit(f"Run failed: {exc}") from exc
 
     elapsed = time.perf_counter() - start_t
@@ -573,7 +643,7 @@ def main() -> None:
         batch_start_wall_time,
     )
     write_rows(log_file, [summary])
-    write_timing_diagnostics(ROOT / args.timing_log_file, responses, summary)
+    write_timing_diagnostics(ROOT / args.timing_log_file, responses, summary, batch_start_wall_time)
     write_p99_logs(
         ROOT / args.p99_log_file,
         ROOT / args.latency_trace_file,
