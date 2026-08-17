@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import asyncio
 
+import pytest
+
 from scaling.metrics import RuntimeMetrics
 from scaling.planner import OffloadPlan
 from search.service import SearchService
@@ -31,6 +33,11 @@ class DummyProvider:
 
     async def warmup(self) -> None:
         return None
+
+
+class FailingProvider(DummyProvider):
+    async def invoke(self, payload) -> list[dict]:
+        raise RuntimeError("FC unavailable")
 
 
 class DummyPlanner:
@@ -70,13 +77,14 @@ def test_search_service_reranks_remote_pq_candidates_on_vm() -> None:
     async def scenario() -> None:
         vectors = VectorStore.synthetic(dimension=4, count=10)
         provider = DummyProvider()
+        metrics = RuntimeMetrics()
         service = SearchService(
             vectors=vectors,
             local_index=None,
             provider=provider,
             warmup_manager=DummyWarmupManager(),
             planner=DummyPlanner(),
-            metrics=RuntimeMetrics(),
+            metrics=metrics,
             config=search_config(),
         )
         try:
@@ -97,5 +105,40 @@ def test_search_service_reranks_remote_pq_candidates_on_vm() -> None:
         assert result.to_json()["function_timings_ms"]["handler_total"] == 1.0
         assert result.to_json()["function_timings_ms"]["remote_queue_estimate"] >= 0.0
         assert result.to_json()["function_metrics"] == {"candidate_count": 3}
+        snapshot = metrics.snapshot()
+        assert snapshot["request_inflight"] == 0
+        assert snapshot["faas_candidate_inflight"] == 0
+        assert snapshot["faas_candidate_samples"] == 1
+        assert snapshot["faas_error_count_total"] == 0
+        assert snapshot["rerank_samples"] == 1
+
+    asyncio.run(scenario())
+
+
+def test_search_service_releases_metrics_after_faas_error() -> None:
+    async def scenario() -> None:
+        vectors = VectorStore.synthetic(dimension=4, count=10)
+        metrics = RuntimeMetrics()
+        service = SearchService(
+            vectors=vectors,
+            local_index=None,
+            provider=FailingProvider(),
+            warmup_manager=DummyWarmupManager(),
+            planner=DummyPlanner(),
+            metrics=metrics,
+            config=search_config(),
+        )
+        try:
+            with pytest.raises(RuntimeError, match="FC unavailable"):
+                await service.search(query=vectors.get(0), k=2, candidate_k=3, ef_search=80)
+        finally:
+            service.close()
+
+        snapshot = metrics.snapshot()
+        assert snapshot["request_inflight"] == 0
+        assert snapshot["faas_candidate_inflight"] == 0
+        assert snapshot["faas_error_count_total"] == 1
+        assert snapshot["faas_consecutive_errors"] == 1
+        assert snapshot["rerank_samples"] == 0
 
     asyncio.run(scenario())

@@ -12,12 +12,13 @@ class mode_t(Enum):
     get_distribution = auto()
     generate = auto()
     
-class distribution_t:   
+class distribution_t:
     zipf = 0
     normal = 1
     uniform = 2
     poisson = 3
     inv_gaussian = 4
+    faasgraph = 5
     
 def bounded_inverted_gaussian(x, mean=0, std=1, height=1, domain=(-3, 3)):
     if x < domain[0] or x > domain[1]:
@@ -74,7 +75,8 @@ distribution_name = {
     distribution_t.normal: 'normal',
     distribution_t.uniform: 'uniform',
     distribution_t.poisson: 'poisson',
-    distribution_t.inv_gaussian: 'inverse gaussian'
+    distribution_t.inv_gaussian: 'inverse gaussian',
+    distribution_t.faasgraph: 'faasgraph',
 }
 
 class parameters_t:

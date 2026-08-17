@@ -17,8 +17,8 @@ def write_p99_logs(
     window_seconds: float,
     *,
     method: str = "",
-) -> None:
-    """Append one run's per-query trace and fixed-window P99 rows."""
+) -> tuple[Path, Path]:
+    """Write one run to new P99 and trace files and return their paths."""
 
     trace_rows = build_latency_trace(
         responses,
@@ -27,8 +27,11 @@ def write_p99_logs(
         method=method,
     )
     p99_rows = build_p99_windows(trace_rows, window_seconds)
-    write_rows(trace_path, trace_rows)
-    write_rows(p99_path, p99_rows)
+    run_id = trace_rows[0]["run_id"] if trace_rows else _run_id(batch_start_wall_time)
+    actual_p99_path, actual_trace_path = _new_run_paths(p99_path, trace_path, run_id)
+    write_rows(actual_trace_path, trace_rows)
+    write_rows(actual_p99_path, p99_rows)
+    return actual_p99_path, actual_trace_path
 
 
 def build_latency_trace(
@@ -38,19 +41,37 @@ def build_latency_trace(
     *,
     method: str = "",
 ) -> list[dict]:
-    run_id = (
-        time.strftime("%Y%m%dT%H%M%S", time.localtime(batch_start_wall_time))
-        + f"-{int(batch_start_wall_time * 1000) % 1000:03d}"
-    )
+    run_id = _run_id(batch_start_wall_time)
     run_start_time = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(batch_start_wall_time))
     rows: list[dict] = []
     for item in sorted(responses, key=lambda response: int(response.get("query_id", 0))):
         started_at = _as_float(item.get("_client_started_at_s"))
         finished_at = _as_float(item.get("_client_finished_at_s"))
+        future_submitted_at = _as_float(item.get("_client_future_submitted_at_s"))
+        worker_started_at = _as_float(item.get("_client_worker_started_at_s"))
         elapsed_s = _as_float(item.get("client_elapsed_s"))
         planned_offset_s = _as_float(item.get("_planned_offset_s"))
+        future_submit_offset_s = (
+            future_submitted_at - batch_start_wall_time if future_submitted_at is not None else None
+        )
+        worker_start_offset_s = worker_started_at - batch_start_wall_time if worker_started_at is not None else None
         actual_offset_s = started_at - batch_start_wall_time if started_at is not None else None
         completion_offset_s = finished_at - batch_start_wall_time if finished_at is not None else None
+        scheduler_submit_slip_ms = (
+            (future_submit_offset_s - planned_offset_s) * 1000.0
+            if future_submit_offset_s is not None and planned_offset_s is not None
+            else None
+        )
+        executor_queue_ms = (
+            (worker_started_at - future_submitted_at) * 1000.0
+            if worker_started_at is not None and future_submitted_at is not None
+            else None
+        )
+        request_prepare_ms = (
+            (started_at - worker_started_at) * 1000.0
+            if started_at is not None and worker_started_at is not None
+            else None
+        )
         schedule_slip_ms = (
             (actual_offset_s - planned_offset_s) * 1000.0
             if actual_offset_s is not None and planned_offset_s is not None
@@ -70,9 +91,20 @@ def build_latency_trace(
                 "query_id": item.get("query_id", ""),
                 "request_id": item.get("request_id", ""),
                 "planned_offset_s": _rounded_or_blank(planned_offset_s, 6),
+                "future_submit_offset_s": _rounded_or_blank(future_submit_offset_s, 6),
+                "worker_start_offset_s": _rounded_or_blank(worker_start_offset_s, 6),
                 "actual_start_offset_s": _rounded_or_blank(actual_offset_s, 6),
                 "completion_offset_s": _rounded_or_blank(completion_offset_s, 6),
+                "scheduler_submit_slip_ms": _rounded_or_blank(scheduler_submit_slip_ms, 3),
+                "executor_queue_ms": _rounded_or_blank(executor_queue_ms, 3),
+                "request_prepare_ms": _rounded_or_blank(request_prepare_ms, 3),
                 "schedule_slip_ms": _rounded_or_blank(schedule_slip_ms, 3),
+                "planned_to_completion_ms": _rounded_or_blank(
+                    (completion_offset_s - planned_offset_s) * 1000.0
+                    if completion_offset_s is not None and planned_offset_s is not None
+                    else None,
+                    3,
+                ),
                 "client_latency_ms": _rounded_or_blank(elapsed_s * 1000.0 if elapsed_s is not None else None, 3),
                 "success": "error" not in item,
                 "error": item.get("error", ""),
@@ -164,18 +196,35 @@ def write_rows(path: Path, rows: list[dict]) -> None:
     if not rows:
         return
     fieldnames = list(rows[0].keys())
-    exists = path.exists() and path.stat().st_size > 0
-    if exists and _existing_header(path) != fieldnames:
-        archive_path = path.with_suffix(path.suffix + f".old-{int(time.time())}")
-        path.rename(archive_path)
-        exists = False
-    with path.open("a", newline="", encoding="utf-8") as fp:
+    with path.open("x", newline="", encoding="utf-8") as fp:
         writer = csv.DictWriter(fp, fieldnames=fieldnames)
-        if not exists:
-            writer.writeheader()
+        writer.writeheader()
         writer.writerows(rows)
 
 
-def _existing_header(path: Path) -> list[str] | None:
-    with path.open("r", newline="", encoding="utf-8") as fp:
-        return next(csv.reader(fp), None)
+def _run_id(batch_start_wall_time: float) -> str:
+    return (
+        time.strftime("%Y%m%dT%H%M%S", time.localtime(batch_start_wall_time))
+        + f"-{int(batch_start_wall_time * 1000) % 1000:03d}"
+    )
+
+
+def _new_run_paths(
+    p99_path: Path,
+    trace_path: Path,
+    run_id: str,
+) -> tuple[Path, Path]:
+    attempt = 1
+    while True:
+        token = run_id if attempt == 1 else f"{run_id}-{attempt}"
+        candidates = (
+            _with_run_suffix(p99_path, token),
+            _with_run_suffix(trace_path, token),
+        )
+        if not any(path.exists() for path in candidates):
+            return candidates
+        attempt += 1
+
+
+def _with_run_suffix(path: Path, run_id: str) -> Path:
+    return path.with_name(f"{path.stem}_{run_id}{path.suffix}")

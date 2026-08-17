@@ -6,7 +6,7 @@ from collections.abc import Iterable, Callable
 import scipy.signal
 
 help_str = '''Parameters:
-  o: outer distribution, can be gaussian, zipf or uniform (default: zipf)
+  o: outer distribution, can be gaussian, zipf, uniform or faasgraph (default: zipf)
   a1 (mu): (outer/low-pass) skewness for zipf, standard deviation for gaussian, discarded
   a2 (a): (inner/high-pass) skewness, 
   g: granularity, number of bins.(default: 10)
@@ -14,6 +14,8 @@ help_str = '''Parameters:
   duration: range of samples (in seconds)
   offset: offset of samples (delay in seconds)
   f: save/load file location (default: ./plan.bin)
+  seed: deterministic random seed
+  preview: optional PNG path for the faasgraph profile preview
   mode: 
        get_distribution: get and save the distribution
        generate: generate queries based on the distribution
@@ -25,9 +27,17 @@ plan = None
 n_threads = None
 console_debug = lambda *_, **__: None
 
-def init(seed = 1):
+def init(seed: int | None = None):
     global parameters
     import os
+    if seed is not None:
+        npseed = int(seed) % uint32_max
+        randomseed = int(seed)
+        np.random.seed(npseed)
+        random.seed(randomseed)
+        parameters.seeds = (npseed, randomseed)
+        print(f'Using explicit random seed {seed}.')
+        return
     if os.path.exists('seeds'):
         with open('seeds', 'r') as fp:
             try:
@@ -38,7 +48,7 @@ def init(seed = 1):
                 print(f'Using random seeds {seeds}.')
                 return
             except: pass
-    random.seed(time.time() + seed)
+    random.seed(time.time() + 1)
     npseed = int(random.random() * time.perf_counter_ns()) % uint32_max
     np.random.seed(npseed)
     randomseed = int(np.random.random() * time.perf_counter_ns()) 
@@ -54,8 +64,144 @@ def controlled_shuffle(data, max_shift):
         data[:i] = data[-i:]
         data[-i:] = ss
         
-def gen_distribution():
+def _faasgraph_profile(bin_count: int, rng) -> tuple[np.ndarray, tuple[int, ...]]:
+    """Build the normalized multi-stage trend shown in FaaSGraph Figure 1."""
+    x = (np.arange(bin_count, dtype=np.float64) + 0.5) / bin_count
+    anchor_x = np.array([
+        0.00, 0.04, 0.08, 0.12, 0.16, 0.19, 0.22, 0.26, 0.31,
+        0.36, 0.41, 0.47, 0.50, 0.53, 0.56, 0.60, 0.64, 0.68,
+        0.72, 0.77, 0.82, 0.88, 0.93, 0.97, 1.00,
+    ])
+    anchor_y = np.array([
+        0.20, 0.29, 0.34, 0.34, 0.43, 0.53, 0.67, 0.60, 0.57,
+        0.47, 0.42, 0.43, 0.56, 0.48, 0.57, 0.46, 0.35, 0.22,
+        0.11, 0.055, 0.025, 0.012, 0.010, 0.025, 0.10,
+    ])
+    profile = np.interp(x, anchor_x, anchor_y)
+
+    # Correlated noise keeps the curve natural without changing its day-scale shape.
+    from scipy.ndimage import gaussian_filter1d
+
+    noise = gaussian_filter1d(rng.normal(0.0, 1.0, bin_count), sigma=0.8)
+    noise /= max(float(np.max(np.abs(noise))), 1e-12)
+    profile += noise * (0.018 + 0.045 * profile)
+    profile = np.clip(profile, 0.01, 0.74)
+
+    spike_positions = (0.085, 0.17, 0.295)
+    spike_heights = (0.95, 1.00, 0.82)
+    spike_bins = tuple(
+        min(bin_count - 1, max(0, int(round(position * (bin_count - 1)))))
+        for position in spike_positions
+    )
+    for bin_index, height in zip(spike_bins, spike_heights):
+        profile[bin_index] = height
+    return profile, spike_bins
+
+
+def _counts_from_profile(profile: np.ndarray, sample_count: int) -> np.ndarray:
+    exact = profile / np.sum(profile) * sample_count
+    counts = np.floor(exact).astype(np.int64)
+    remainder = sample_count - int(np.sum(counts))
+    if remainder > 0:
+        order = np.argsort(-(exact - counts), kind='stable')
+        counts[order[:remainder]] += 1
+    return counts
+
+
+def _save_faasgraph_preview(
+    preview_path: str,
+    timestamps: list[float],
+    spike_bins: tuple[int, ...],
+) -> None:
+    from pathlib import Path
+    import matplotlib
+
+    matplotlib.use('Agg')
+    import matplotlib.pyplot as plt
+
+    output = Path(preview_path)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    edges = np.linspace(0.0, parameters.duration, parameters.granularity + 1)
+    counts, _ = np.histogram(timestamps, bins=edges)
+    bin_width = parameters.duration / parameters.granularity
+    query_rate_qps = counts / bin_width
+    peak_qps = max(float(np.max(query_rate_qps)), 1.0)
+    x_minutes = (edges[:-1] + np.diff(edges) / 2.0) / 60.0
+
+    fig, ax = plt.subplots(figsize=(11.5, 4.8), dpi=180)
+    ax.plot(x_minutes, query_rate_qps, color='#1C8EAE', linewidth=1.0, label='query rate')
+    ax.axhline(0.67 * peak_qps, color='#F06A6A', linewidth=1.8, label='normalized 0.67')
+    ax.axhline(peak_qps, color='#888888', linestyle='--', linewidth=1.0)
+    ax.axhline(0.01 * peak_qps, color='#888888', linestyle='--', linewidth=1.0)
+    ax.scatter(
+        [x_minutes[index] for index in spike_bins],
+        [query_rate_qps[index] for index in spike_bins],
+        marker='x',
+        s=64,
+        linewidth=1.2,
+        color='#111111',
+        label='spike',
+        zorder=4,
+    )
+    ax.set_xlim(0.0, parameters.duration / 60.0)
+    ax.set_ylim(0.0, peak_qps * 1.06)
+    ax.set_xlabel('Elapsed time (minute)')
+    ax.set_ylabel(f'Scheduled query rate (QPS, {bin_width:g}s window)')
+    ax.set_title(f'55-minute FaaSGraph-like workload plan (peak {peak_qps:.1f} QPS)')
+    ax.grid(axis='y', color='#E5E7EB', linewidth=0.7)
+    ax.legend(loc='upper right', frameon=False, ncol=3)
+    normalized_axis = ax.secondary_yaxis(
+        'right',
+        functions=(lambda qps: qps / peak_qps, lambda ratio: ratio * peak_qps),
+    )
+    normalized_axis.set_ylabel('Normalized query rate')
+    fig.tight_layout()
+    fig.savefig(output)
+    plt.close(fig)
+    print(f'Wrote preview to {output}')
+
+
+def _gen_faasgraph_distribution(preview_path: str | None) -> None:
     global plan
+    if parameters.n <= 0:
+        raise ValueError('n must be positive')
+    if parameters.duration <= 0:
+        raise ValueError('duration must be positive')
+    if parameters.granularity < 20:
+        raise ValueError('faasgraph granularity must be at least 20')
+
+    rng = np.random.default_rng(parameters.seeds[0])
+    profile, spike_bins = _faasgraph_profile(parameters.granularity, rng)
+    counts = _counts_from_profile(profile, parameters.n)
+    bin_width = parameters.duration / parameters.granularity
+    chunks = []
+    for bin_index, count in enumerate(counts):
+        if count <= 0:
+            continue
+        start = bin_index * bin_width
+        chunks.append(rng.uniform(start, start + bin_width, int(count)))
+    timestamps = np.sort(np.concatenate(chunks))
+    timestamps[0] = 0.0
+    timestamps[-1] = float(parameters.duration)
+    plan = timestamps.tolist()
+
+    with open(parameters.f, 'wb') as fp:
+        pickle.dump(dump_t(parameters, plan), fp)
+    print(
+        f'Generated FaaSGraph profile: queries={len(plan)}, '
+        f'duration={parameters.duration}s, bins={parameters.granularity}, '
+        f'bin_width={bin_width:.3f}s'
+    )
+    if preview_path:
+        _save_faasgraph_preview(preview_path, plan, spike_bins)
+
+
+def gen_distribution(preview_path: str | None = None):
+    global plan
+    if parameters.outer == distribution_t.faasgraph:
+        _gen_faasgraph_distribution(preview_path)
+        return
+
     def get_normalized(a, b, n, r, postporcess, 
                        distribution = distribution_f[distribution_t.zipf]):
         if n == 0: return np.empty(0)
@@ -154,11 +300,12 @@ def generate(workload : Iterable[Callable], plan_path: str):
         
 def main():
     import sys, copy
-    init()
     argv = copy.deepcopy(sys.argv)
     global parameters, console_debug
-    
+
     print_help = False
+    explicit_seed = None
+    preview_path = None
     argv.pop(0)
 
     def get_distribution(name: str):
@@ -175,8 +322,12 @@ def main():
                 d = 'poisson'
             case a if a.startswith('i'):
                 d = 'inv_gaussian'
+            case a if a.startswith('f'):
+                d = 'faasgraph'
             case _:
                 return
+        if d == 'faasgraph' and name != 'outer':
+            raise ValueError('faasgraph is only supported as the outer distribution')
         exec(f'parameters.{name} = distribution_t.{d}')
 
     while len(argv) > 0:
@@ -253,6 +404,12 @@ def main():
             case '-f' | '--f':
                 try: parameters.f = argv.pop(0)
                 except Exception as e: print(e)
+            case '--seed':
+                try: explicit_seed = int(argv.pop(0))
+                except Exception as e: print(e)
+            case '--preview':
+                try: preview_path = argv.pop(0)
+                except Exception as e: print(e)
             case '-h' | '--help':
                 print_help = True
             case '-v' | '--verbose':
@@ -260,14 +417,16 @@ def main():
             case s:
                 print(f'Invalid option: {s}')
                 print_help = True
-    if print_help: 
+    if print_help:
         print(help_str)
+
+    init(explicit_seed)
         
     console_log('Parameters:')
     for k, v in parameters.__dict__.items():
         console_log(f'    {k}: {v}')
     if parameters.mode == mode_t.get_distribution:
-        gen_distribution()
+        gen_distribution(preview_path=preview_path)
     elif parameters.mode == mode_t.generate:
         with open(parameters.f, 'rb') as fp:
             dump : Optional[dump_t] = pickle.load(fp)

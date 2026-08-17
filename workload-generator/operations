@@ -1,0 +1,50 @@
+cd /home/qian/Code/FaasANNS/workload-generator
+
+峰值 400
+python ./main.py \
+  -o faasgraph \
+  -i uniform \
+  -n 165000 \
+  -d 3300 \
+  -g 660 \
+  --seed 20260814 \
+  -f plan.bin \
+  --preview faasgraph_55min_plan.png
+
+
+峰值 250
+[Plan 文件](/home/qian/Code/FaasANNS/workload-generator/saved_plans/faasgraph_peak250_n268750_d3300_g660_seed20260814.bin)
+[预览图](/home/qian/Code/FaasANNS/workload-generator/saved_plans/faasgraph_peak250_n268750_d3300_g660_seed20260814.png)
+时长：3300 秒
+Query 数：268750
+平均：81.44 QPS
+5 秒窗口峰值：249.8 QPS
+cd /home/qian/Code/FaasANNS/workload-generator
+
+python ./main.py \
+  -o faasgraph \
+  -i uniform \
+  -n 268750 \
+  -d 3300 \
+  -g 660 \
+  --seed 20260814 \
+  -f saved_plans/faasgraph_peak250_n268750_d3300_g660_seed20260814.bin \
+  --preview saved_plans/faasgraph_peak250_n268750_d3300_g660_seed20260814.png
+  
+
+
+10 秒固定并发
+[并发 100](/home/qian/Code/FaasANNS/workload-generator/saved_plans/constant_c100_d10_g10_seed20260814.bin)：1000 个 Query
+python ./main.py -o uniform -i uniform -n 1000 -d 10 -g 10 \
+  --seed 20260814 \
+  -f saved_plans/constant_c100_d10_g10_seed20260814.bin
+
+[并发 200](/home/qian/Code/FaasANNS/workload-generator/saved_plans/constant_c200_d10_g10_seed20260814.bin)：2000 个 Query
+python ./main.py -o uniform -i uniform -n 2000 -d 10 -g 10 \
+  --seed 20260814 \
+  -f saved_plans/constant_c200_d10_g10_seed20260814.bin
+
+[并发 300](/home/qian/Code/FaasANNS/workload-generator/saved_plans/constant_c300_d10_g10_seed20260814.bin)：3000 个 Query
+python ./main.py -o uniform -i uniform -n 3000 -d 10 -g 10 \
+  --seed 20260814 \
+  -f saved_plans/constant_c300_d10_g10_seed20260814.bin

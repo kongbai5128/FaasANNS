@@ -29,6 +29,7 @@ class QueryProgress:
         self.total = total
         self.enabled = enabled and total > 0
         self.stream = stream or sys.stderr
+        self.submitted = 0
         self.sent = 0
         self.received = 0
         self.started_at = time.perf_counter()
@@ -40,6 +41,13 @@ class QueryProgress:
         self.last_line_len = 0
         if self.enabled:
             self._render(force=True)
+
+    def mark_submitted(self) -> None:
+        if not self.enabled:
+            return
+        with self.lock:
+            self.submitted += 1
+            self._render(force=self.submitted == self.total)
 
     def mark_sent(self) -> None:
         if not self.enabled:
@@ -61,7 +69,7 @@ class QueryProgress:
         with self.lock:
             if self.closed:
                 return
-            if self.is_tty or self.sent < self.total or self.received < self.total:
+            if self.is_tty or self.submitted < self.total or self.sent < self.total or self.received < self.total:
                 self._render(force=True)
             if self.is_tty:
                 self.stream.write("\n")
@@ -74,13 +82,15 @@ class QueryProgress:
             return
         self.last_render_at = now
         elapsed = now - self.started_at
+        executor_queue = max(self.submitted - self.sent, 0)
         in_flight = max(self.sent - self.received, 0)
         timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
         line = (
             f"Progress: time={timestamp}, "
+            f"submitted={self.submitted}/{self.total} ({self.submitted / self.total * 100:.1f}%), "
             f"sent={self.sent}/{self.total} ({self.sent / self.total * 100:.1f}%), "
             f"received={self.received}/{self.total} ({self.received / self.total * 100:.1f}%), "
-            f"in_flight={in_flight}, elapsed={elapsed:.1f}s"
+            f"executor_queue={executor_queue}, in_flight={in_flight}, elapsed={elapsed:.1f}s"
         )
         if self.is_tty:
             padding = " " * max(0, self.last_line_len - len(line))
@@ -151,7 +161,7 @@ def submit_with_plan(
     submit: Callable[[int], object],
     plan: WorkloadPlan | None,
     *,
-    spin_threshold_s: float = 0.03,
+    spin_threshold_s: float = 0.0005,
     on_submit: Callable[[Future], None] | None = None,
     stop_event: threading.Event | None = None,
 ) -> tuple[list[Future], float]:
@@ -167,13 +177,17 @@ def submit_with_plan(
             on_submit(future)
         return future
 
+    def submit_tracked(i: int) -> Future:
+        submitted_at = time.time()
+        return track(executor.submit(_run_tracked, submit, i, submitted_at))
+
     if plan is None:
         batch_start_wall_time = time.time()
         futures: list[Future] = []
         for i in range(count):
             if stop_event is not None and stop_event.is_set():
                 break
-            futures.append(track(executor.submit(submit, i)))
+            futures.append(submit_tracked(i))
         return futures, batch_start_wall_time
 
     if count > len(plan.timestamps):
@@ -197,11 +211,22 @@ def submit_with_plan(
         if not _wait_until(t0, target, spin_threshold_s, stop_event):
             break
         if len(group) == 1:
-            futures.append(track(executor.submit(submit, group[0])))
+            futures.append(submit_tracked(group[0]))
             continue
 
         start_gate = threading.Event()
-        futures.extend(track(executor.submit(_run_after_gate, start_gate, submit, i)) for i in group)
+        futures.extend(
+            track(
+                executor.submit(
+                    _run_after_gate,
+                    start_gate,
+                    submit,
+                    i,
+                    time.time(),
+                )
+            )
+            for i in group
+        )
         start_gate.set()
     return futures, batch_start_wall_time
 
@@ -212,6 +237,8 @@ def _wait_until(
     spin_threshold_s: float,
     stop_event: threading.Event | None = None,
 ) -> bool:
+    if spin_threshold_s < 0:
+        raise ValueError("spin_threshold_s must not be negative")
     while True:
         if stop_event is not None and stop_event.is_set():
             return False
@@ -231,9 +258,27 @@ def _wait_until(
             time.sleep(wait_seconds)
 
 
-def _run_after_gate(gate: threading.Event, submit: Callable[[int], object], i: int) -> object:
+def _run_tracked(
+    submit: Callable[[int], object],
+    i: int,
+    submitted_at: float,
+) -> object:
+    worker_started_at = time.time()
+    result = submit(i)
+    if isinstance(result, dict):
+        result["_client_future_submitted_at_s"] = submitted_at
+        result["_client_worker_started_at_s"] = worker_started_at
+    return result
+
+
+def _run_after_gate(
+    gate: threading.Event,
+    submit: Callable[[int], object],
+    i: int,
+    submitted_at: float,
+) -> object:
     gate.wait()
-    return submit(i)
+    return _run_tracked(submit, i, submitted_at)
 
 
 def resolve_request_count(query_num: int, plan: WorkloadPlan | None) -> int:

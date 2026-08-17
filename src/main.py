@@ -94,7 +94,7 @@ def create_app(config_path: str, *, server_workers: int = 1) -> FastAPI:
 
     # 组装运行时状态：QPS 统计、offload 决策、预热管理和两阶段搜索服务。
     metrics = RuntimeMetrics()
-    planner = OffloadPlanner(worker_search_config, config.scaling)
+    planner = OffloadPlanner(worker_search_config, config.scaling, metrics=metrics)
     warmup_manager = WarmupManager(provider=provider, config=config.scaling)
     search_service = SearchService(
         vectors=vector_store,

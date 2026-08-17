@@ -182,13 +182,18 @@ def run_queries(
 
     progress = QueryProgress(count, enabled=show_progress)
     stop_event = threading.Event()
+    query_payloads = (
+        [query.astype("float32").tolist() for query in query_vectors]
+        if send_vectors
+        else None
+    )
 
     def submit(i: int) -> dict:
         source_query_id = i % len(query_vectors)
-        progress.mark_sent()
-        vector = query_vectors[source_query_id].astype("float32").tolist() if send_vectors else None
+        vector = query_payloads[source_query_id] if query_payloads is not None else None
         attempt_started_at = time.time()
         attempt_start = time.perf_counter()
+        progress.mark_sent()
         try:
             response = send_one_query(
                 server_url=server_url,
@@ -223,6 +228,8 @@ def run_queries(
         return response
 
     def track_future(future: Future) -> None:
+        progress.mark_submitted()
+
         def on_done(completed: Future) -> None:
             if completed.cancelled():
                 return
@@ -644,7 +651,7 @@ def main() -> None:
     )
     write_rows(log_file, [summary])
     write_timing_diagnostics(ROOT / args.timing_log_file, responses, summary, batch_start_wall_time)
-    write_p99_logs(
+    p99_log_path, latency_trace_path = write_p99_logs(
         ROOT / args.p99_log_file,
         ROOT / args.latency_trace_file,
         responses,
@@ -667,8 +674,8 @@ def main() -> None:
         print(f"Error query_id={item['query_id']}: {item['error']}")
     print(f"Log saved to {log_file}")
     print(f"Timing log saved to {ROOT / args.timing_log_file}")
-    print(f"P99 time series saved to {ROOT / args.p99_log_file}")
-    print(f"Per-query latency trace saved to {ROOT / args.latency_trace_file}")
+    print(f"P99 time series saved to {p99_log_path}")
+    print(f"Per-query latency trace saved to {latency_trace_path}")
 
 
 if __name__ == "__main__":

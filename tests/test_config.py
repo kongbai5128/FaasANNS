@@ -106,6 +106,7 @@ def test_load_config_accepts_complete_config(
     assert config.dataset.base_path == base_path
     assert config.dataset.dimension == dimension
     assert config.search.hnsw.hnsw_index_path == hnsw_index_path
+    assert config.scaling.adaptive_offload_enabled is False
 
 
 def test_load_config_accepts_multiple_server_workers(tmp_path: Path) -> None:
@@ -117,6 +118,23 @@ def test_load_config_accepts_multiple_server_workers(tmp_path: Path) -> None:
 
     assert config.server.workers == 2
     assert config.server.worker_healthcheck_timeout_seconds == 90
+
+
+def test_load_config_accepts_adaptive_offload_settings(tmp_path: Path) -> None:
+    data = _full_config()
+    data["scaling"].update(
+        {
+            "adaptive_offload_enabled": True,
+            "adaptive_max_faas_ratio": 0.9,
+            "adaptive_circuit_breaker_seconds": 20.0,
+        }
+    )
+
+    config = load_config(_write_config(tmp_path, data))
+
+    assert config.scaling.adaptive_offload_enabled is True
+    assert config.scaling.adaptive_max_faas_ratio == 0.9
+    assert config.scaling.adaptive_circuit_breaker_seconds == 20.0
 
 
 def test_load_config_rejects_missing_key(tmp_path: Path) -> None:

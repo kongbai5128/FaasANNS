@@ -30,6 +30,7 @@ def create_router(search_service: SearchService, vector_store: VectorStore) -> A
     async def stats() -> dict:
         return {
             "metrics": search_service.metrics.snapshot(),
+            "offload": search_service.planner.snapshot(),
             "prewarm": search_service.warmup_manager.snapshot(),
         }
 

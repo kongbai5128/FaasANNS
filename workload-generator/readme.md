@@ -83,6 +83,34 @@
 
 ![Figure_8](/workload-generator/(medium)ozipf_iuniform_n50000_d1000_g200_a12.2_b10.5_a21.001_b20.01_s0.png)
 
-**Low bursty**:  
+**Low bursty**:
 
 ![Figure_9](/workload-generator/(low)oinverse_gaussian_inormal_n50000_d100000_g15_a11.15_b10.96_a25.0_b20.9_s0.png)
+
+## FaaSGraph Figure 1 profile
+
+The `faasgraph` outer mode generates a deterministic multi-stage trend modeled
+after Figure 1 in FaaSGraph: rising daytime load, a high-load plateau, a gradual
+drop to a long low-load period, a final recovery, and three narrow spikes.
+Requests are uniformly distributed inside each time bin instead of sharing one
+timestamp.
+
+The following command generates a 55-minute plan with the same average rate as
+the existing 15,000-query/300-second plan (50 QPS):
+
+```bash
+python ./main.py \
+  -o faasgraph \
+  -i uniform \
+  -n 165000 \
+  -d 3300 \
+  -g 660 \
+  --seed 20260814 \
+  -f plan.bin \
+  --preview faasgraph_55min_plan.png
+```
+
+- `-d 3300`: 55 minutes.
+- `-g 660`: one five-second profile bin.
+- `--seed`: reproduces identical timestamps and spikes.
+- `--preview`: writes actual QPS on the left axis and normalized rate on the right axis.

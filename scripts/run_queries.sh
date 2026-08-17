@@ -15,7 +15,8 @@ export no_proxy="*"
 export NO_PROXY="*"
 
 TIMEOUT="${TIMEOUT:-650}"
-PLAN_FILE="workload-generator/plan.bin"
+# PLAN_FILE="workload-generator/plan.bin"
+PLAN_FILE="workload-generator/saved_plans/faasgraph_peak400_n430000_d3300_g660_seed20260814.bin"
 P99_LOG_DIR="${P99_LOG_DIR:-logs/P99/7_24}"
 P99_WINDOW_SECONDS="${P99_WINDOW_SECONDS:-5}"
 

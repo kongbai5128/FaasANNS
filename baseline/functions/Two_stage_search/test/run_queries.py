@@ -145,16 +145,17 @@ def run_queries(args: argparse.Namespace) -> list[dict]:
     print(describe_workload_plan(plan, request_count))
     if request_count > len(queries):
         print(f"Replaying {request_count} requests by cycling {len(queries)} query vectors")
+    query_payloads = [query.astype("float32").tolist() for query in queries]
 
     progress = QueryProgress(request_count, enabled=not args.no_progress)
     stop_event = threading.Event()
 
     def submit(i: int) -> dict:
         source_query_id = i % len(queries)
-        progress.mark_sent()
-        vector = queries[source_query_id].astype("float32").tolist()
+        vector = query_payloads[source_query_id]
         attempt_started_at = time.time()
         attempt_start = time.perf_counter()
+        progress.mark_sent()
         try:
             response = send_one_query(
                 endpoint=args.endpoint,
@@ -186,6 +187,8 @@ def run_queries(args: argparse.Namespace) -> list[dict]:
         return response
 
     def track_future(future: Future) -> None:
+        progress.mark_submitted()
+
         def on_done(completed: Future) -> None:
             if completed.cancelled():
                 return
@@ -414,7 +417,7 @@ def main() -> None:
         raise SystemExit(f"Run stopped after query error: {errors[0]['error']}")
     summary = summarize_run(args, responses, elapsed, args.batch_start_wall_time)
     write_rows(ROOT / args.log_file, [summary])
-    write_p99_logs(
+    p99_log_path, latency_trace_path = write_p99_logs(
         ROOT / args.p99_log_file,
         ROOT / args.latency_trace_file,
         responses,
@@ -432,8 +435,8 @@ def main() -> None:
     )
     for item in errors[:5]:
         print(f"Error query_id={item['query_id']}: {item['error']}")
-    print(f"P99 time series saved to {ROOT / args.p99_log_file}")
-    print(f"Per-query latency trace saved to {ROOT / args.latency_trace_file}")
+    print(f"P99 time series saved to {p99_log_path}")
+    print(f"Per-query latency trace saved to {latency_trace_path}")
 
 
 if __name__ == "__main__":

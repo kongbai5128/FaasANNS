@@ -96,6 +96,28 @@ class SearchService:
         candidate_k: int | None = None,
         ef_search: int | None = None,
     ) -> SearchResult:
+        self.metrics.request_started()
+        try:
+            return await self._search(
+                query=query,
+                k=k,
+                request_id=request_id,
+                use_faas=use_faas,
+                candidate_k=candidate_k,
+                ef_search=ef_search,
+            )
+        finally:
+            self.metrics.request_finished()
+
+    async def _search(
+        self,
+        query: np.ndarray,
+        k: int | None = None,
+        request_id: str | None = None,
+        use_faas: bool | None = None,
+        candidate_k: int | None = None,
+        ef_search: int | None = None,
+    ) -> SearchResult:
         total_start = time.perf_counter()
 
         # 请求没有显式传参时，使用配置里的默认 top-k、候选数量和 HNSW 搜索深度。
@@ -117,12 +139,23 @@ class SearchService:
         timings["plan"] = plan_elapsed.seconds
 
         # 第一阶段只返回候选 id 和近似分数；云函数路径不会做 raw vector 精排。
-        with measure() as candidate_elapsed:
+        candidate_started = time.perf_counter()
+        candidate_success = False
+        self.metrics.candidate_started(plan.mode)
+        try:
             if plan.mode == "faas":
                 candidates = await self._search_faas(request_id, query, candidate_k, ef_search, timings)
             else:
                 candidates = await self._run_local_candidates(query, candidate_k, ef_search)
-        timings["candidates"] = candidate_elapsed.seconds
+            candidate_success = True
+        finally:
+            candidate_seconds = time.perf_counter() - candidate_started
+            timings["candidates"] = candidate_seconds
+            self.metrics.candidate_finished(
+                plan.mode,
+                candidate_seconds,
+                success=candidate_success,
+            )
         if plan.mode == "faas":
             cold_start_id, index_loaded_at, function_timings_ms, function_metrics = _extract_function_metadata(candidates)
             if function_timings_ms is not None and "remote_invoke" in timings:
@@ -132,13 +165,18 @@ class SearchService:
                     function_timings_ms["remote_queue_estimate"] = round(max(0.0, queue_ms), 3)
         else:
             cold_start_id, index_loaded_at, function_timings_ms, function_metrics = (None, None, None, None)
-        self.metrics.candidate_latency.record(candidate_elapsed.seconds)
 
         # 第二阶段始终在 VM 上用原始向量 exact rerank，最终只返回 top-k。
-        with measure() as rerank_elapsed:
+        rerank_started = time.perf_counter()
+        rerank_success = False
+        self.metrics.rerank_started()
+        try:
             results = await self._rerank(query, candidates, k)
-        timings["rerank"] = rerank_elapsed.seconds
-        self.metrics.rerank_latency.record(rerank_elapsed.seconds)
+            rerank_success = True
+        finally:
+            rerank_seconds = time.perf_counter() - rerank_started
+            timings["rerank"] = rerank_seconds
+            self.metrics.rerank_finished(rerank_seconds, success=rerank_success)
         timings["total"] = time.perf_counter() - total_start
 
         return SearchResult(

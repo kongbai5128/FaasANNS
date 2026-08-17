@@ -3,7 +3,7 @@
     "host": "0.0.0.0",
     "port": 8080,
     "log_level": "info",
-    "workers": 2,
+    "workers": 3,
     "worker_healthcheck_timeout_seconds": 120
   },
   "dataset": {
@@ -34,10 +34,21 @@
     "enable_prewarm": false,
     "local_candidate_ms": 8.0,
     "remote_candidate_ms": 20.0,
-    "function_concurrency": 1,
+    "function_concurrency": 20,
     "max_warm_functions": 32,
     "function_memory_mb": 512,
-    "cost_per_gb_second": 0.0000167
+    "cost_per_gb_second": 0.0000167,
+    "adaptive_offload_enabled": true,
+    "adaptive_control_interval_seconds": 1.0,
+    "adaptive_target_local_utilization": 0.7,
+    "adaptive_ratio_step_up": 0.1,
+    "adaptive_ratio_step_down": 0.25,
+    "adaptive_ratio_hysteresis": 0.03,
+    "adaptive_max_faas_ratio": 0.9,
+    "adaptive_remote_p95_limit_ms": 300.0,
+    "adaptive_faas_error_rate_threshold": 0.02,
+    "adaptive_circuit_breaker_seconds": 15.0,
+    "adaptive_min_latency_samples": 20
   },
   "faas": {
     "provider": "aliyun_http",

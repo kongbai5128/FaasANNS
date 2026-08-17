@@ -59,6 +59,17 @@ class ScalingConfig:
     max_warm_functions: int
     function_memory_mb: int
     cost_per_gb_second: float
+    adaptive_offload_enabled: bool = False
+    adaptive_control_interval_seconds: float = 1.0
+    adaptive_target_local_utilization: float = 0.7
+    adaptive_ratio_step_up: float = 0.1
+    adaptive_ratio_step_down: float = 0.25
+    adaptive_ratio_hysteresis: float = 0.03
+    adaptive_max_faas_ratio: float = 1.0
+    adaptive_remote_p95_limit_ms: float = 300.0
+    adaptive_faas_error_rate_threshold: float = 0.02
+    adaptive_circuit_breaker_seconds: float = 15.0
+    adaptive_min_latency_samples: int = 20
 
 
 @dataclass
